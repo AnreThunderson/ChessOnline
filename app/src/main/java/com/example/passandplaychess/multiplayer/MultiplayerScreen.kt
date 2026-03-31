@@ -24,13 +24,25 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.passandplaychess.*
 import com.example.passandplaychess.R as AppR
 
+private const val ONE_DAY_MINUTES = 1440
+
 @Composable
 fun MultiplayerScreen(
     onBack: () -> Unit,
+    resumeRoomCode: String? = null,
+    resumeRole: String? = null,
     vm: MultiplayerViewModel = viewModel()
 ) {
     val uiState by vm.uiState.collectAsState()
     val gameState by vm.gameState.collectAsState()
+
+    // Auto-resume if coming from main menu saved daily game
+    LaunchedEffect(resumeRoomCode, resumeRole) {
+        if (!resumeRoomCode.isNullOrBlank() && (resumeRole == "host" || resumeRole == "guest")) {
+            if (resumeRole == "host") vm.hostGame(resumeRoomCode)
+            else vm.joinGame(resumeRoomCode)
+        }
+    }
 
     when (val s = uiState) {
         is MultiplayerUiState.Idle -> {
@@ -41,9 +53,11 @@ fun MultiplayerScreen(
                 onJoin = { code -> vm.joinGame(code) }
             )
         }
+
         is MultiplayerUiState.Connecting -> {
             CenteredStatus("Connecting…")
         }
+
         is MultiplayerUiState.WaitingForPeer -> {
             WaitingScreen(
                 roomCode = s.roomCode,
@@ -51,6 +65,7 @@ fun MultiplayerScreen(
                 onCancel = { vm.leaveGame(); onBack() }
             )
         }
+
         is MultiplayerUiState.InGame -> {
             val timeWhiteMs by vm.timeWhiteMs.collectAsState()
             val timeBlackMs by vm.timeBlackMs.collectAsState()
@@ -66,12 +81,14 @@ fun MultiplayerScreen(
                 onLeave = { vm.leaveGame(); onBack() }
             )
         }
+
         is MultiplayerUiState.PeerDisconnected -> {
             DisconnectedScreen(
                 message = s.message,
                 onBack = { vm.leaveGame(); onBack() }
             )
         }
+
         is MultiplayerUiState.Failure -> {
             ErrorScreen(
                 message = s.message,
@@ -107,10 +124,7 @@ private fun LobbyScreen(
         }
 
         if (tab == 0) {
-            HostTab(
-                vm = vm,
-                onHost = onHost
-            )
+            HostTab(vm = vm, onHost = onHost)
         } else {
             JoinTab(onJoin = onJoin)
         }
@@ -127,11 +141,9 @@ private fun HostTab(
     vm: MultiplayerViewModel,
     onHost: (String) -> Unit
 ) {
-    // Step 1: pick time. Step 2: show room code and create.
     var step by remember { mutableIntStateOf(0) } // 0=choose time, 1=show code
     val selectedMinutes by vm.selectedMinutes.collectAsState()
 
-    // Generate a random room code once (same behavior as before)
     val roomCode = remember { generateRoomCode() }
 
     Column(
@@ -147,8 +159,14 @@ private fun HostTab(
                 onSelect = { vm.setTimeControlMinutes(it) }
             )
 
+            val desc = if (selectedMinutes == ONE_DAY_MINUTES) {
+                "Daily: each player has 1 day to make each move."
+            } else {
+                "Each player gets $selectedMinutes minute${if (selectedMinutes == 1) "" else "s"} total."
+            }
+
             Text(
-                text = "Each player gets ${selectedMinutes} minute${if (selectedMinutes == 1) "" else "s"} total.",
+                text = desc,
                 fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
@@ -157,9 +175,7 @@ private fun HostTab(
             Button(
                 onClick = { step = 1 },
                 modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Next")
-            }
+            ) { Text("Next") }
         } else {
             Text("Share this code with your opponent:", fontSize = 14.sp)
             Text(
@@ -169,23 +185,23 @@ private fun HostTab(
                 letterSpacing = 8.sp,
                 color = MaterialTheme.colorScheme.primary
             )
+
+            val timeLabel = if (selectedMinutes == ONE_DAY_MINUTES) "1 day" else "${selectedMinutes} min"
             Text(
-                text = "Time: ${selectedMinutes} min • You will play as White.",
+                text = "Time: $timeLabel • You will play as White.",
                 fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+
             Button(
                 onClick = { onHost(roomCode) },
                 modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Create Room & Wait")
-            }
+            ) { Text("Create Room & Wait") }
+
             OutlinedButton(
                 onClick = { step = 0 },
                 modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Change time")
-            }
+            ) { Text("Change time") }
         }
     }
 }
@@ -195,18 +211,17 @@ private fun TimeChoiceRow(
     selectedMinutes: Int,
     onSelect: (Int) -> Unit
 ) {
-    val opts = listOf(1, 3, 5, 10)
+    val opts = listOf(1, 3, 5, 10, ONE_DAY_MINUTES)
     Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         opts.forEach { m ->
             val selected = m == selectedMinutes
+            val label = if (m == ONE_DAY_MINUTES) "1 day (per move)" else "$m minute${if (m == 1) "" else "s"}"
             Button(
                 onClick = { onSelect(m) },
                 modifier = Modifier.fillMaxWidth(),
                 colors = if (selected) ButtonDefaults.buttonColors()
                 else ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-            ) {
-                Text("$m minute${if (m == 1) "" else "s"}")
-            }
+            ) { Text(label) }
         }
     }
 }
@@ -242,13 +257,9 @@ private fun JoinTab(onJoin: (String) -> Unit) {
             onClick = { onJoin(code) },
             enabled = valid,
             modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Join Room")
-        }
+        ) { Text("Join Room") }
     }
 }
-
-// ── Waiting screen ────────────────────────────────────────────────────────────
 
 @Composable
 private fun WaitingScreen(roomCode: String, role: String, onCancel: () -> Unit) {
@@ -264,8 +275,7 @@ private fun WaitingScreen(roomCode: String, role: String, onCancel: () -> Unit) 
         Text("Room: $roomCode", fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         Text(
-            text = if (role == "host") "Waiting for opponent to join…"
-            else "Joining room, please wait…",
+            text = if (role == "host") "Waiting for opponent to join…" else "Joining room, please wait…",
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(32.dp))
@@ -273,7 +283,7 @@ private fun WaitingScreen(roomCode: String, role: String, onCancel: () -> Unit) 
     }
 }
 
-// ── In-game screen ────────────────────────────────────────────────────────────
+// ── In-game screen ───────────────────────────────────────────────────────────
 
 @Composable
 private fun OnlineGameScreen(
@@ -310,8 +320,7 @@ private fun OnlineGameScreen(
 
         val resultText = when (val r = gameState.result) {
             GameResult.Ongoing -> if (myTurn) "Your turn" else "Opponent's turn"
-            is GameResult.Checkmate ->
-                "Game over – ${if (r.winner == Side.WHITE) "White" else "Black"} wins"
+            is GameResult.Checkmate -> "Game over – ${if (r.winner == Side.WHITE) "White" else "Black"} wins"
             is GameResult.Stalemate -> "Draw: stalemate"
             is GameResult.DrawInsufficientMaterial -> "Draw: insufficient material"
             is GameResult.DrawFiftyMove -> "Draw: 50-move rule"
@@ -380,8 +389,6 @@ private fun OnlineStatusBar(
     }
 }
 
-// ── Board UI (online) ─────────────────────────────────────────────────────────
-
 @Composable
 private fun OnlineChessBoard(
     state: ChessGameState,
@@ -407,7 +414,6 @@ private fun OnlineChessBoard(
                 for (file in files) {
                     val sq = Square(file, rank)
                     val piece = state.board.pieceAt(sq)
-                    // a1 must be dark, so light squares are (file+rank) odd.
                     val isLight = (file + rank) % 2 == 1
                     val isSelected = state.selected == sq
                     val isTarget = state.legalTargets.contains(sq)
@@ -465,8 +471,6 @@ private fun Piece.drawableResIdOrNullOnline(): Int? {
     }
 }
 
-// ── Simple status / error screens ─────────────────────────────────────────────
-
 @Composable
 private fun CenteredStatus(text: String) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -515,7 +519,13 @@ private fun generateRoomCode(): String {
 
 private fun formatClock(ms: Long): String {
     val totalSeconds = (ms / 1000L).coerceAtLeast(0L)
-    val minutes = totalSeconds / 60L
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
     val seconds = totalSeconds % 60L
-    return "%d:%02d".format(minutes, seconds)
+
+    return if (hours > 0) {
+        "%d:%02d:%02d".format(hours, minutes, seconds)
+    } else {
+        "%d:%02d".format(minutes, seconds)
+    }
 }
