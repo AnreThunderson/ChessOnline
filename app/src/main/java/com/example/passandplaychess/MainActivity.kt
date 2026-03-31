@@ -13,6 +13,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -24,6 +26,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.passandplaychess.multiplayer.MultiplayerScreen
 import com.example.passandplaychess.ui.theme.PassAndPlayChessTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 // ── Screen navigation ─────────────────────────────────────────────────────────
 
@@ -89,7 +94,7 @@ private fun MenuScreen(
             onClick = onLocalPlay,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Pass & Play  (local)")
+            Text("Local Play (vs friend / vs bot)")
         }
         Spacer(Modifier.height(16.dp))
         Button(
@@ -105,6 +110,37 @@ private fun MenuScreen(
 private fun ChessScreen(onBack: () -> Unit) {
     var state by remember { mutableStateOf(ChessGameState.initial()) }
 
+    // Bot configuration UI state
+    var vsBot by remember { mutableStateOf(false) }
+    var botSide by remember { mutableStateOf(Side.BLACK) }
+    var difficulty by remember { mutableIntStateOf(2) } // depth 1..4
+
+    val scope = rememberCoroutineScope()
+
+    fun maybeMakeBotMove() {
+        if (!vsBot) return
+        if (state.result != GameResult.Ongoing) return
+        if (state.sideToMove != botSide) return
+
+        val cfg = BotConfig(enabled = true, botSide = botSide, depth = difficulty)
+
+        scope.launch(Dispatchers.Default) {
+            // Small delay feels more natural
+            delay(250)
+            val uci = ChessBot.chooseMoveUci(state, cfg) ?: return@launch
+            val next = state.applyUciMove(uci) ?: return@launch
+
+            launch(Dispatchers.Main) {
+                state = next
+            }
+        }
+    }
+
+    // If user changes bot settings mid-game, allow bot to move if it's its turn.
+    LaunchedEffect(vsBot, botSide, difficulty, state.sideToMove, state.result) {
+        maybeMakeBotMove()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -113,20 +149,101 @@ private fun ChessScreen(onBack: () -> Unit) {
     ) {
         Header(
             state = state,
-            onNewGame = { state = ChessGameState.initial() },
+            onNewGame = {
+                state = ChessGameState.initial()
+            },
             onClearSelection = { state = state.copy(selected = null, legalTargets = emptySet(), lastMessage = "") },
             onBack = onBack
+        )
+
+        BotControls(
+            vsBot = vsBot,
+            onVsBotChange = { enabled ->
+                vsBot = enabled
+                // If enabling and it's bot's move, act immediately.
+                maybeMakeBotMove()
+            },
+            botSide = botSide,
+            onBotSideChange = {
+                botSide = it
+                maybeMakeBotMove()
+            },
+            difficulty = difficulty,
+            onDifficultyChange = {
+                difficulty = it
+                maybeMakeBotMove()
+            }
         )
 
         ChessBoard(
             state = state,
             onTap = { sq ->
+                // If it's bot's turn, ignore taps (prevents cheating / UI weirdness)
+                if (vsBot && state.sideToMove == botSide) return@ChessBoard
+
                 val res = state.handleTap(sq)
                 state = res.newState
+
+                // After human moves, let bot respond
+                maybeMakeBotMove()
             }
         )
 
         Footer(state = state)
+    }
+}
+
+@Composable
+private fun BotControls(
+    vsBot: Boolean,
+    onVsBotChange: (Boolean) -> Unit,
+    botSide: Side,
+    onBotSideChange: (Side) -> Unit,
+    difficulty: Int,
+    onDifficultyChange: (Int) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, MaterialTheme.colorScheme.outline)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Play vs Bot", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+            Switch(checked = vsBot, onCheckedChange = onVsBotChange)
+        }
+
+        if (!vsBot) return
+
+        // Side picker
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Bot plays:", modifier = Modifier.width(80.dp))
+            Button(
+                onClick = { onBotSideChange(Side.WHITE) },
+                enabled = botSide != Side.WHITE
+            ) { Text("White") }
+            Button(
+                onClick = { onBotSideChange(Side.BLACK) },
+                enabled = botSide != Side.BLACK
+            ) { Text("Black") }
+        }
+
+        // Difficulty slider (depth)
+        Column {
+            Text("Difficulty: $difficulty", fontWeight = FontWeight.SemiBold)
+            Slider(
+                value = difficulty.toFloat(),
+                onValueChange = { onDifficultyChange(it.toInt().coerceIn(1, 4)) },
+                valueRange = 1f..4f,
+                steps = 2
+            )
+            Text(
+                "1 = easy, 4 = harder (slower on older phones)",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
