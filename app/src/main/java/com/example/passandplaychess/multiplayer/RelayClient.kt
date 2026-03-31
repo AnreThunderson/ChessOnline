@@ -30,6 +30,13 @@ sealed class RelayEvent {
         val turnDeadlineEpochMs: Long? = null
     ) : RelayEvent()
 
+    data class TimeForfeit(
+        val room: String,
+        val winner: String, // "w" or "b"
+        val loser: String,  // "w" or "b"
+        val deadlineEpochMs: Long
+    ) : RelayEvent()
+
     data class RemoteError(val message: String) : RelayEvent()
 }
 
@@ -168,6 +175,17 @@ class RelayClient(private val serverUrl: String) {
                         moveHistory = historyList,
                         initialTimeMs = initialTimeMs,
                         turnDeadlineEpochMs = deadline
+                    )
+                )
+            }
+
+            "time_forfeit" -> {
+                onEvent?.invoke(
+                    RelayEvent.TimeForfeit(
+                        room = msg.optString("room"),
+                        winner = msg.optString("winner"),
+                        loser = msg.optString("loser"),
+                        deadlineEpochMs = msg.optLong("deadlineEpochMs")
                     )
                 )
             }
