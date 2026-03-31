@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.passandplaychess.R as AppR
 import com.example.passandplaychess.multiplayer.MultiplayerScreen
 import com.example.passandplaychess.ui.theme.PassAndPlayChessTheme
 import kotlinx.coroutines.Dispatchers
@@ -149,9 +150,7 @@ private fun ChessScreen(onBack: () -> Unit) {
     ) {
         Header(
             state = state,
-            onNewGame = {
-                state = ChessGameState.initial()
-            },
+            onNewGame = { state = ChessGameState.initial() },
             onClearSelection = { state = state.copy(selected = null, legalTargets = emptySet(), lastMessage = "") },
             onBack = onBack
         )
@@ -160,7 +159,6 @@ private fun ChessScreen(onBack: () -> Unit) {
             vsBot = vsBot,
             onVsBotChange = { enabled ->
                 vsBot = enabled
-                // If enabling and it's bot's move, act immediately.
                 maybeMakeBotMove()
             },
             botSide = botSide,
@@ -178,7 +176,7 @@ private fun ChessScreen(onBack: () -> Unit) {
         ChessBoard(
             state = state,
             onTap = { sq ->
-                // If it's bot's turn, ignore taps (prevents cheating / UI weirdness)
+                // If it's bot's turn, ignore taps
                 if (vsBot && state.sideToMove == botSide) return@ChessBoard
 
                 val res = state.handleTap(sq)
@@ -216,7 +214,6 @@ private fun BotControls(
 
         if (!vsBot) return
 
-        // Side picker
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Bot plays:", modifier = Modifier.width(80.dp))
             Button(
@@ -229,7 +226,6 @@ private fun BotControls(
             ) { Text("Black") }
         }
 
-        // Difficulty slider (depth)
         Column {
             Text("Difficulty: $difficulty", fontWeight = FontWeight.SemiBold)
             Slider(
@@ -299,23 +295,22 @@ private fun Footer(state: ChessGameState) {
 }
 
 private fun Piece.drawableResIdOrNull(): Int? {
-    // We map using your existing Unicode piece characters.
     return when (this.toUnicode()) {
         // White
-        "♔" -> R.drawable.chess_klt45
-        "♕" -> R.drawable.chess_qlt45
-        "♖" -> R.drawable.chess_rlt45
-        "♗" -> R.drawable.chess_blt45
-        "♘" -> R.drawable.chess_nlt45
-        "♙" -> R.drawable.chess_plt45
+        "♔" -> AppR.drawable.chess_klt45
+        "♕" -> AppR.drawable.chess_qlt45
+        "♖" -> AppR.drawable.chess_rlt45
+        "♗" -> AppR.drawable.chess_blt45
+        "♘" -> AppR.drawable.chess_nlt45
+        "♙" -> AppR.drawable.chess_plt45
 
         // Black
-        "♚" -> R.drawable.chess_kdt45
-        "♛" -> R.drawable.chess_qdt45
-        "♜" -> R.drawable.chess_rdt45
-        "♝" -> R.drawable.chess_bdt45
-        "♞" -> R.drawable.chess_ndt45
-        "♟" -> R.drawable.chess_pdt45
+        "♚" -> AppR.drawable.chess_kdt45
+        "♛" -> AppR.drawable.chess_qdt45
+        "♜" -> AppR.drawable.chess_rdt45
+        "♝" -> AppR.drawable.chess_bdt45
+        "♞" -> AppR.drawable.chess_ndt45
+        "♟" -> AppR.drawable.chess_pdt45
 
         else -> null
     }
