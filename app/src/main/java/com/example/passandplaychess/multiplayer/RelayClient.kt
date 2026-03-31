@@ -26,7 +26,8 @@ sealed class RelayEvent {
     data class StateSyncReceived(
         val fen: String,
         val sideToMove: String,
-        val moveHistory: List<String>
+        val moveHistory: List<String>,
+        val initialTimeMs: Long? = null
     ) : RelayEvent()
     data class RemoteError(val message: String) : RelayEvent()
 }
@@ -98,12 +99,18 @@ class RelayClient(private val serverUrl: String) {
         })
     }
 
-    fun sendStateSync(fen: String, sideToMove: String, moveHistory: List<String> = emptyList()) {
+    fun sendStateSync(
+        fen: String,
+        sideToMove: String,
+        moveHistory: List<String> = emptyList(),
+        initialTimeMs: Long? = null
+    ) {
         send(JSONObject().apply {
             put("type", "state_sync")
             put("fen", fen)
             put("sideToMove", sideToMove)
             put("moveHistory", org.json.JSONArray(moveHistory))
+            if (initialTimeMs != null) put("initialTimeMs", initialTimeMs)
         })
     }
 
@@ -156,11 +163,15 @@ class RelayClient(private val serverUrl: String) {
                         for (i in 0 until history.length()) add(history.getString(i))
                     }
                 }
+                val initialTimeMs =
+                    if (msg.has("initialTimeMs")) msg.optLong("initialTimeMs") else null
+
                 onEvent?.invoke(
                     RelayEvent.StateSyncReceived(
                         fen = msg.optString("fen"),
                         sideToMove = msg.optString("sideToMove"),
-                        moveHistory = historyList
+                        moveHistory = historyList,
+                        initialTimeMs = initialTimeMs
                     )
                 )
             }
