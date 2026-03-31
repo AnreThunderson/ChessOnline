@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -18,9 +19,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.passandplaychess.multiplayer.MultiplayerScreen
 import com.example.passandplaychess.ui.theme.PassAndPlayChessTheme
+
+// ── Screen navigation ─────────────────────────────────────────────────────────
+
+private sealed class AppScreen {
+    data object Menu : AppScreen()
+    data object LocalGame : AppScreen()
+    data object Multiplayer : AppScreen()
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -28,7 +39,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             PassAndPlayChessTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
-                    ChessScreen()
+                    AppNavigation()
                 }
             }
         }
@@ -36,7 +47,62 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun ChessScreen() {
+private fun AppNavigation() {
+    var screen by remember { mutableStateOf<AppScreen>(AppScreen.Menu) }
+
+    when (screen) {
+        AppScreen.Menu -> MenuScreen(
+            onLocalPlay = { screen = AppScreen.LocalGame },
+            onMultiplayer = { screen = AppScreen.Multiplayer }
+        )
+        AppScreen.LocalGame -> ChessScreen(
+            onBack = { screen = AppScreen.Menu }
+        )
+        AppScreen.Multiplayer -> MultiplayerScreen(
+            onBack = { screen = AppScreen.Menu }
+        )
+    }
+}
+
+// ── Main menu ─────────────────────────────────────────────────────────────────
+
+@Composable
+private fun MenuScreen(
+    onLocalPlay: () -> Unit,
+    onMultiplayer: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "ChessOnline",
+            fontSize = 32.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(48.dp))
+        Button(
+            onClick = onLocalPlay,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Pass & Play  (local)")
+        }
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = onMultiplayer,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Online Multiplayer")
+        }
+    }
+}
+
+@Composable
+private fun ChessScreen(onBack: () -> Unit) {
     var state by remember { mutableStateOf(ChessGameState.initial()) }
 
     Column(
@@ -48,7 +114,8 @@ private fun ChessScreen() {
         Header(
             state = state,
             onNewGame = { state = ChessGameState.initial() },
-            onClearSelection = { state = state.copy(selected = null, legalTargets = emptySet(), lastMessage = "") }
+            onClearSelection = { state = state.copy(selected = null, legalTargets = emptySet(), lastMessage = "") },
+            onBack = onBack
         )
 
         ChessBoard(
@@ -67,7 +134,8 @@ private fun ChessScreen() {
 private fun Header(
     state: ChessGameState,
     onNewGame: () -> Unit,
-    onClearSelection: () -> Unit
+    onClearSelection: () -> Unit,
+    onBack: () -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         val status = when (state.result) {
@@ -94,6 +162,7 @@ private fun Header(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onNewGame) { Text("New game") }
             Button(onClick = onClearSelection) { Text("Clear selection") }
+            OutlinedButton(onClick = onBack) { Text("Menu") }
         }
     }
 }

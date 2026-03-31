@@ -170,6 +170,91 @@ data class ChessGameState(
             )
             return s.withRepetitionUpdated().withResultRecomputed()
         }
+
+        /**
+         * Parses a FEN string and returns the corresponding [ChessGameState],
+         * or null if the FEN is invalid.
+         */
+        fun fromFen(fen: String): ChessGameState? {
+            return try {
+                val parts = fen.trim().split(" ")
+                if (parts.size < 4) return null
+
+                // 1. Piece placement
+                val rows = parts[0].split("/")
+                if (rows.size != 8) return null
+                val cells = Array<Piece?>(64) { null }
+                for ((rankIdx, row) in rows.withIndex()) {
+                    val rank = 7 - rankIdx
+                    var file = 0
+                    for (ch in row) {
+                        if (ch.isDigit()) {
+                            file += ch.digitToInt()
+                        } else {
+                            val side = if (ch.isUpperCase()) Side.WHITE else Side.BLACK
+                            val type = when (ch.lowercaseChar()) {
+                                'k' -> PieceType.KING
+                                'q' -> PieceType.QUEEN
+                                'r' -> PieceType.ROOK
+                                'b' -> PieceType.BISHOP
+                                'n' -> PieceType.KNIGHT
+                                'p' -> PieceType.PAWN
+                                else -> return null
+                            }
+                            cells[rank * 8 + file] = Piece(side, type)
+                            file++
+                        }
+                    }
+                }
+                val board = Board(cells.toList())
+
+                // 2. Active color
+                val sideToMove = when (parts[1]) {
+                    "w" -> Side.WHITE
+                    "b" -> Side.BLACK
+                    else -> return null
+                }
+
+                // 3. Castling
+                val castlingStr = parts[2]
+                val castling = CastlingRights(
+                    wk = castlingStr.contains('K'),
+                    wq = castlingStr.contains('Q'),
+                    bk = castlingStr.contains('k'),
+                    bq = castlingStr.contains('q')
+                )
+
+                // 4. En passant
+                val epStr = parts[3]
+                val enPassantTarget: Square? = if (epStr == "-") null else {
+                    val f = epStr[0] - 'a'
+                    val r = epStr[1] - '1'
+                    if (f in 0..7 && r in 0..7) Square(f, r) else null
+                }
+
+                // 5. Halfmove clock (optional)
+                val halfmoveClock = if (parts.size > 4) parts[4].toIntOrNull() ?: 0 else 0
+
+                // 6. Fullmove number (optional)
+                val fullmoveNumber = if (parts.size > 5) parts[5].toIntOrNull() ?: 1 else 1
+
+                ChessGameState(
+                    board = board,
+                    sideToMove = sideToMove,
+                    castling = castling,
+                    enPassantTarget = enPassantTarget,
+                    halfmoveClock = halfmoveClock,
+                    fullmoveNumber = fullmoveNumber,
+                    selected = null,
+                    legalTargets = emptySet(),
+                    lastMessage = "",
+                    positionCounts = emptyMap(),
+                    result = GameResult.Ongoing
+                ).withRepetitionUpdated().withResultRecomputed()
+            } catch (_: Exception) {
+                null
+            }
+        }
     }
 
     fun handleTap(sq: Square): TapResult {
@@ -213,7 +298,7 @@ data class ChessGameState(
             .withRepetitionUpdated()
             .withResultRecomputed()
 
-        return TapResult(next, "")
+        return TapResult(next, "", candidate)
     }
 
     fun isInCheck(side: Side): Boolean {
@@ -567,6 +652,86 @@ data class ChessGameState(
         return copy(positionCounts = newCounts.toMap())
     }
 
+    // ── Public helpers for online multiplayer ─────────────────────────────────
+
+    /**
+     * Finds the legal move matching the given UCI string and applies it.
+     * Returns null if [uci] is malformed or not a legal move in this position.
+     */
+    fun applyUciMove(uci: String): ChessGameState? {
+        if (uci.length < 4) return null
+        val fromFile = uci[0] - 'a'
+        val fromRank = uci[1] - '1'
+        val toFile = uci[2] - 'a'
+        val toRank = uci[3] - '1'
+        if (fromFile !in 0..7 || fromRank !in 0..7 || toFile !in 0..7 || toRank !in 0..7) return null
+        val from = Square(fromFile, fromRank)
+        val to = Square(toFile, toRank)
+        val promoType: PieceType? = if (uci.length >= 5) {
+            when (uci[4].lowercaseChar()) {
+                'q' -> PieceType.QUEEN
+                'r' -> PieceType.ROOK
+                'b' -> PieceType.BISHOP
+                'n' -> PieceType.KNIGHT
+                else -> null
+            }
+        } else null
+
+        val candidate = legalMovesFrom(from).firstOrNull { mv ->
+            mv.to == to && (mv !is Move.Normal || mv.promotion == promoType)
+        } ?: return null
+
+        return applyMove(candidate)
+            .copy(selected = null, legalTargets = emptySet(), lastMessage = "")
+            .withRepetitionUpdated()
+            .withResultRecomputed()
+    }
+
+    /** Serialises the current position to a FEN string. */
+    fun toFen(): String {
+        val sb = StringBuilder()
+        for (rank in 7 downTo 0) {
+            var empty = 0
+            for (file in 0..7) {
+                val p = board.pieceAt(Square(file, rank))
+                if (p == null) {
+                    empty++
+                } else {
+                    if (empty > 0) { sb.append(empty); empty = 0 }
+                    val ch = when (p.type) {
+                        PieceType.KING -> 'K'
+                        PieceType.QUEEN -> 'Q'
+                        PieceType.ROOK -> 'R'
+                        PieceType.BISHOP -> 'B'
+                        PieceType.KNIGHT -> 'N'
+                        PieceType.PAWN -> 'P'
+                    }
+                    sb.append(if (p.side == Side.WHITE) ch else ch.lowercaseChar())
+                }
+            }
+            if (empty > 0) sb.append(empty)
+            if (rank > 0) sb.append('/')
+        }
+        sb.append(' ')
+        sb.append(if (sideToMove == Side.WHITE) 'w' else 'b')
+        sb.append(' ')
+        val castlingStr = buildString {
+            if (castling.wk) append('K')
+            if (castling.wq) append('Q')
+            if (castling.bk) append('k')
+            if (castling.bq) append('q')
+            if (isEmpty()) append('-')
+        }
+        sb.append(castlingStr)
+        sb.append(' ')
+        sb.append(enPassantTarget?.toString() ?: "-")
+        sb.append(' ')
+        sb.append(halfmoveClock)
+        sb.append(' ')
+        sb.append(fullmoveNumber)
+        return sb.toString()
+    }
+
     private fun positionKey(): String {
         // A simple repetition key: piece placement + side + castling + en-passant file
         // (Enough for threefold repetition detection in practice.)
@@ -611,7 +776,22 @@ data class ChessGameState(
     }
 }
 
-data class TapResult(val newState: ChessGameState, val message: String)
+data class TapResult(val newState: ChessGameState, val message: String, val move: Move? = null)
+
+/** Returns the UCI notation for a move, e.g. "e2e4" or "e7e8q". */
+fun Move.toUci(): String {
+    val promo = when (this) {
+        is Move.Normal -> when (promotion) {
+            PieceType.QUEEN -> "q"
+            PieceType.ROOK -> "r"
+            PieceType.BISHOP -> "b"
+            PieceType.KNIGHT -> "n"
+            null -> ""
+        }
+        else -> ""
+    }
+    return "$from$to$promo"
+}
 
 private fun isInsufficientMaterial(board: Board): Boolean {
     val pieces = board.allPieces().map { it.second }
