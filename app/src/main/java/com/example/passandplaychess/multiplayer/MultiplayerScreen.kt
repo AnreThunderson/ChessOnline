@@ -33,46 +33,136 @@ fun MultiplayerScreen(
 ) {
     val uiState by vm.uiState.collectAsState()
     val gameState by vm.gameState.collectAsState()
+    val selectedMinutes by vm.selectedMinutes.collectAsState()
+
+    // New: time control must be chosen before showing lobby
+    var timeChosen by remember { mutableStateOf(false) }
 
     when (val s = uiState) {
         is MultiplayerUiState.Idle -> {
-            LobbyScreen(
-                onBack = onBack,
-                onHost = { code -> vm.hostGame(code) },
-                onJoin = { code -> vm.joinGame(code) }
-            )
+            if (!timeChosen) {
+                TimeControlScreen(
+                    selectedMinutes = selectedMinutes,
+                    onSelect = { m ->
+                        vm.setTimeControlMinutes(m)
+                        timeChosen = true
+                    },
+                    onBack = onBack
+                )
+            } else {
+                LobbyScreen(
+                    onBack = onBack,
+                    onHost = { code -> vm.hostGame(code) },
+                    onJoin = { code -> vm.joinGame(code) }
+                )
+            }
         }
+
         is MultiplayerUiState.Connecting -> {
             CenteredStatus("Connecting…")
         }
+
         is MultiplayerUiState.WaitingForPeer -> {
             WaitingScreen(
                 roomCode = s.roomCode,
                 role = s.role,
-                onCancel = { vm.leaveGame(); onBack() }
+                onCancel = {
+                    vm.leaveGame()
+                    timeChosen = false
+                    onBack()
+                }
             )
         }
+
         is MultiplayerUiState.InGame -> {
+            val timeWhiteMs by vm.timeWhiteMs.collectAsState()
+            val timeBlackMs by vm.timeBlackMs.collectAsState()
+
             OnlineGameScreen(
                 gameState = gameState,
                 role = s.role,
                 roomCode = s.roomCode,
                 myTurn = s.myTurn,
+                timeWhiteMs = timeWhiteMs,
+                timeBlackMs = timeBlackMs,
                 onTap = { sq -> vm.onTap(sq) },
-                onLeave = { vm.leaveGame(); onBack() }
+                onLeave = {
+                    vm.leaveGame()
+                    timeChosen = false
+                    onBack()
+                }
             )
         }
+
         is MultiplayerUiState.PeerDisconnected -> {
             DisconnectedScreen(
                 message = s.message,
-                onBack = { vm.leaveGame(); onBack() }
+                onBack = {
+                    vm.leaveGame()
+                    timeChosen = false
+                    onBack()
+                }
             )
         }
+
         is MultiplayerUiState.Failure -> {
             ErrorScreen(
                 message = s.message,
-                onBack = { vm.leaveGame(); onBack() }
+                onBack = {
+                    vm.leaveGame()
+                    timeChosen = false
+                    onBack()
+                }
             )
+        }
+    }
+}
+
+// ── Time control screen ───────────────────────────────────────────────────────
+
+@Composable
+private fun TimeControlScreen(
+    selectedMinutes: Int,
+    onSelect: (Int) -> Unit,
+    onBack: () -> Unit
+) {
+    val options = listOf(1, 3, 5, 10)
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("Choose Time Control", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text(
+            "Each player gets this much total time for the whole game.",
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            options.forEach { minutes ->
+                val selected = minutes == selectedMinutes
+                Button(
+                    onClick = { onSelect(minutes) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = if (selected) ButtonDefaults.buttonColors()
+                    else ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                ) {
+                    Text("$minutes minute${if (minutes == 1) "" else "s"}")
+                }
+            }
+        }
+
+        Spacer(Modifier.weight(1f))
+        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
+            Text("Back")
         }
     }
 }
@@ -116,7 +206,6 @@ private fun LobbyScreen(
 
 @Composable
 private fun HostTab(onHost: (String) -> Unit) {
-    // Generate a random 5-char room code once
     val roomCode = remember { generateRoomCode() }
 
     Column(
@@ -216,6 +305,8 @@ private fun OnlineGameScreen(
     role: String,
     roomCode: String,
     myTurn: Boolean,
+    timeWhiteMs: Long,
+    timeBlackMs: Long,
     onTap: (Square) -> Unit,
     onLeave: () -> Unit
 ) {
@@ -225,15 +316,15 @@ private fun OnlineGameScreen(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Status bar
         OnlineStatusBar(
             gameState = gameState,
             role = role,
             roomCode = roomCode,
-            myTurn = myTurn
+            myTurn = myTurn,
+            timeWhiteMs = timeWhiteMs,
+            timeBlackMs = timeBlackMs
         )
 
-        // Board — flip for black
         val flipBoard = role == "guest"
         OnlineChessBoard(
             state = gameState,
@@ -241,11 +332,10 @@ private fun OnlineGameScreen(
             onTap = onTap
         )
 
-        // Footer
         val resultText = when (val r = gameState.result) {
             GameResult.Ongoing -> if (myTurn) "Your turn" else "Opponent's turn"
             is GameResult.Checkmate ->
-                "Checkmate – ${if (r.winner == Side.WHITE) "White" else "Black"} wins"
+                "Game over – ${if (r.winner == Side.WHITE) "White" else "Black"} wins"
             is GameResult.Stalemate -> "Draw: stalemate"
             is GameResult.DrawInsufficientMaterial -> "Draw: insufficient material"
             is GameResult.DrawFiftyMove -> "Draw: 50-move rule"
@@ -265,7 +355,9 @@ private fun OnlineStatusBar(
     gameState: ChessGameState,
     role: String,
     roomCode: String,
-    myTurn: Boolean
+    myTurn: Boolean,
+    timeWhiteMs: Long,
+    timeBlackMs: Long
 ) {
     val checkStatus = when (gameState.result) {
         GameResult.Ongoing -> if (gameState.isInCheck(gameState.sideToMove)) " – Check!" else ""
@@ -285,6 +377,24 @@ private fun OnlineStatusBar(
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+
+        // Timers
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "White: ${formatClock(timeWhiteMs)}",
+                fontSize = 12.sp,
+                fontWeight = if (gameState.sideToMove == Side.WHITE && gameState.result == GameResult.Ongoing) FontWeight.Bold else FontWeight.Normal
+            )
+            Text(
+                text = "Black: ${formatClock(timeBlackMs)}",
+                fontSize = 12.sp,
+                fontWeight = if (gameState.sideToMove == Side.BLACK && gameState.result == GameResult.Ongoing) FontWeight.Bold else FontWeight.Normal
+            )
+        }
+
         Text(
             text = "Turn: $turnLabel$checkStatus",
             fontSize = 16.sp,
@@ -325,10 +435,8 @@ private fun OnlineChessBoard(
                 for (file in files) {
                     val sq = Square(file, rank)
                     val piece = state.board.pieceAt(sq)
-
-                    // FIX: a1 must be dark, so light squares are (file+rank) odd (same as local board)
+                    // a1 must be dark, so light squares are (file+rank) odd.
                     val isLight = (file + rank) % 2 == 1
-
                     val isSelected = state.selected == sq
                     val isTarget = state.legalTargets.contains(sq)
 
@@ -369,22 +477,18 @@ private fun OnlineChessBoard(
 
 private fun Piece.drawableResIdOrNullOnline(): Int? {
     return when (this.toUnicode()) {
-        // White
         "♔" -> AppR.drawable.chess_klt45
         "♕" -> AppR.drawable.chess_qlt45
         "♖" -> AppR.drawable.chess_rlt45
         "♗" -> AppR.drawable.chess_blt45
         "♘" -> AppR.drawable.chess_nlt45
         "♙" -> AppR.drawable.chess_plt45
-
-        // Black
         "♚" -> AppR.drawable.chess_kdt45
         "♛" -> AppR.drawable.chess_qdt45
         "♜" -> AppR.drawable.chess_rdt45
         "♝" -> AppR.drawable.chess_bdt45
         "♞" -> AppR.drawable.chess_ndt45
         "♟" -> AppR.drawable.chess_pdt45
-
         else -> null
     }
 }
@@ -435,4 +539,11 @@ private fun ErrorScreen(message: String, onBack: () -> Unit) {
 private fun generateRoomCode(): String {
     val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return (1..5).map { chars.random() }.joinToString("")
+}
+
+private fun formatClock(ms: Long): String {
+    val totalSeconds = (ms / 1000L).coerceAtLeast(0L)
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    return "%d:%02d".format(minutes, seconds)
 }
