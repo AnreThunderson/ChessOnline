@@ -31,9 +31,7 @@ interface ExtWs extends WebSocket {
 // ── State ─────────────────────────────────────────────────────────────────────
 
 /**
- * This is only for live socket tracking. The canonical game state lives in Postgres.
- * Rooms may disappear from memory on restart/spin-down; that’s OK because clients
- * can recreate/rejoin and the server will load state from the DB.
+ * Live socket tracking only. Canonical game state lives in Postgres.
  */
 const rooms = new Map<string, Room>();
 
@@ -67,6 +65,27 @@ function toSideToMove(value: unknown): "w" | "b" | null {
   return null;
 }
 
+function isSocketAlive(ws: WebSocket): boolean {
+  return ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING;
+}
+
+function pruneDeadClients(room: Room): void {
+  room.clients = room.clients.filter((c) => isSocketAlive(c.ws));
+}
+
+function kickRoleIfConnected(room: Room, role: "host" | "guest"): void {
+  const existing = room.clients.find((c) => c.role === role);
+  if (!existing) return;
+
+  // Terminate stale/duplicate role so reconnect can proceed.
+  try {
+    existing.ws.terminate();
+  } catch {
+    // ignore
+  }
+  room.clients = room.clients.filter((c) => c !== existing);
+}
+
 // ── HTTP server ───────────────────────────────────────────────────────────────
 
 const server = http.createServer((req, res) => {
@@ -84,7 +103,7 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (rawWs: ExtWs) => {
-  rawWs.alive = true; // used by heartbeat
+  rawWs.alive = true;
 
   rawWs.on("message", (data) => {
     let msg: Record<string, unknown>;
@@ -101,12 +120,12 @@ wss.on("connection", (rawWs: ExtWs) => {
         break;
 
       case "move":
-        // Best-effort relay. In daily mode opponent can be offline.
+        // Best-effort relay. Opponent may be offline.
         handleRelay(rawWs, msg);
         break;
 
       case "state_sync":
-        // Canonical game state commit (persist to DB). Works even if peer offline.
+        // Canonical commit to DB.
         void handleStateSync(rawWs, msg);
         break;
 
@@ -124,9 +143,8 @@ wss.on("connection", (rawWs: ExtWs) => {
   });
 
   rawWs.on("close", () => handleClose(rawWs));
-
   rawWs.on("error", () => {
-    // Errors trigger close automatically; nothing extra needed.
+    // close will happen; nothing else needed
   });
 });
 
@@ -152,15 +170,18 @@ async function handleHello(ws: ExtWs, msg: Record<string, unknown>): Promise<voi
     rooms.set(room_code, room);
   }
 
+  // IMPORTANT: prevent "Room is full" due to stale sockets.
+  pruneDeadClients(room);
+
+  // Allow reconnect: if same role is already connected, kick the old one.
+  kickRoleIfConnected(room, role as "host" | "guest");
+
+  // Prune again (kick removed it, but safe)
+  pruneDeadClients(room);
+
   // Enforce max 2 live sockets in the room
   if (room.clients.length >= 2) {
     sendError(ws, `Room ${room_code} is full`);
-    return;
-  }
-
-  // Ensure only one host/guest connected at once (optional but helpful)
-  if (room.clients.some((c) => c.role === role)) {
-    sendError(ws, `A ${role} is already connected to room ${room_code}`);
     return;
   }
 
@@ -175,7 +196,6 @@ async function handleHello(ws: ExtWs, msg: Record<string, unknown>): Promise<voi
   ws.clientRef = client;
   ws.roomRef = room;
 
-  // Welcome the new client
   send(ws, {
     type: "welcome",
     clientId: client.id,
@@ -184,16 +204,15 @@ async function handleHello(ws: ExtWs, msg: Record<string, unknown>): Promise<voi
     occupants: room.clients.length,
   });
 
-  // Load saved state (if any) and send to connecting client
+  // Load saved state and send to connecting client
   try {
     const saved = await loadGame(room_code);
     if (saved) {
       const isDaily = saved.initial_time_ms === ONE_DAY_MS;
       const deadline = saved.turn_deadline_epoch_ms ?? null;
 
-      // If the deadline passed while everyone was offline, time still expires.
       if (isDaily && deadline != null && nowMs() > deadline) {
-        const loser = saved.side_to_move; // side who failed to move
+        const loser = saved.side_to_move;
         const winner = loser === "w" ? "b" : "w";
         send(ws, {
           type: "time_forfeit",
@@ -215,10 +234,9 @@ async function handleHello(ws: ExtWs, msg: Record<string, unknown>): Promise<voi
     }
   } catch (e) {
     console.error("DB loadGame failed:", e);
-    // Non-fatal: they can still play without restore.
   }
 
-  // Notify existing peer
+  // Notify existing peer (if any)
   const p = peer(room, client);
   if (p) {
     send(p.ws, {
@@ -240,8 +258,7 @@ function handleRelay(ws: ExtWs, msg: Record<string, unknown>): void {
 
   const p = peer(room, client);
   if (!p) {
-    // DAILY REQUIREMENT:
-    // Opponent may be offline. Do not error; just accept and return.
+    // Opponent offline is normal for daily games
     return;
   }
 
@@ -278,7 +295,6 @@ async function handleStateSync(ws: ExtWs, msg: Record<string, unknown>): Promise
   const isDaily = initialTimeMs === ONE_DAY_MS;
   const turnDeadlineEpochMs = isDaily ? nowMs() + ONE_DAY_MS : null;
 
-  // Persist (canonical)
   try {
     await upsertGame({
       room_code: room.code,
@@ -289,10 +305,9 @@ async function handleStateSync(ws: ExtWs, msg: Record<string, unknown>): Promise
     });
   } catch (e) {
     console.error("DB upsertGame failed:", e);
-    // Non-fatal: still relay if possible.
   }
 
-  // Relay to peer if connected (best-effort)
+  // Relay best-effort
   const p = peer(room, client);
   if (!p) return;
 
@@ -319,7 +334,6 @@ function handleClose(ws: ExtWs): void {
     });
   }
 
-  // Keep DB state; just cleanup empty in-memory rooms.
   if (room.clients.length === 0) {
     rooms.delete(room.code);
   }
