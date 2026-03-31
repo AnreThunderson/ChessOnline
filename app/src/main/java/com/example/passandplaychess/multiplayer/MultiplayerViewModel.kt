@@ -49,13 +49,6 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
     private val _gameState = MutableStateFlow(ChessGameState.initial())
     val gameState: StateFlow<ChessGameState> = _gameState
 
-    // ── Time control / clocks ──────────────────────────────────────────────
-
-    /**
-     * Host chooses before creating room:
-     * - values <= 60 are minutes
-     * - value == 1440 means "1 day"
-     */
     private val _selectedMinutes = MutableStateFlow(5)
     val selectedMinutes: StateFlow<Int> = _selectedMinutes
 
@@ -68,19 +61,13 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
     private val _timeBlackMs = MutableStateFlow(_initialTimeMs.value)
     val timeBlackMs: StateFlow<Long> = _timeBlackMs
 
-    // Daily (deadline) support
     private val _turnDeadlineEpochMs = MutableStateFlow<Long?>(null)
 
     private var clockJob: Job? = null
     private var lastTick: Long? = null
 
-    /** Running sequence number for outbound moves. */
     private var outSeq = 0
-
-    /** The role assigned after a successful hello/welcome exchange. */
     private var myRole: String = "host"
-
-    /** Room code once connected. */
     private var roomCode: String? = null
 
     init {
@@ -104,9 +91,7 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
 
                     is ConnectionState.Disconnected -> {
                         val current = _uiState.value
-                        if (current is MultiplayerUiState.InGame ||
-                            current is MultiplayerUiState.WaitingForPeer
-                        ) {
+                        if (current is MultiplayerUiState.InGame || current is MultiplayerUiState.WaitingForPeer) {
                             _uiState.value = MultiplayerUiState.Idle
                         }
                         stopClock()
@@ -121,7 +106,6 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setTimeControlMinutes(minutes: Int) {
-        // allow special "1 day" encoded as 1440
         val m = if (minutes == 1440) 1440 else minutes.coerceIn(1, 60)
         _selectedMinutes.value = m
         val ms = minutesToMs(m)
@@ -158,9 +142,7 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
         if (tap.move != null) {
             relay.sendMove(tap.move.toUci(), ++outSeq)
 
-            // IMPORTANT: commit the canonical state after a move so:
-            // - DB persists it
-            // - daily deadline resets (server sets turnDeadlineEpochMs)
+            // Canonical commit after move
             relay.sendStateSync(
                 fen = newState.toFen(),
                 sideToMove = if (newState.sideToMove == Side.WHITE) "w" else "b",
@@ -204,7 +186,6 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
                     myTurn = isMyTurn(gs)
                 )
 
-                // Host sends initial state + time control
                 if (myRole == "host") {
                     relay.sendStateSync(
                         fen = gs.toFen(),
@@ -212,13 +193,19 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
                         initialTimeMs = _initialTimeMs.value
                     )
                 }
-
                 startClockIfNeeded()
             }
 
             is RelayEvent.PeerLeft -> {
-                _uiState.value = MultiplayerUiState.PeerDisconnected("Your opponent disconnected.")
-                stopClock()
+                // In daily mode we should NOT treat this as fatal; the game continues offline.
+                // We'll still show a message but keep the user in-game.
+                val prev = _uiState.value
+                if (prev is MultiplayerUiState.InGame && isDaily()) {
+                    // stay in game
+                } else {
+                    _uiState.value = MultiplayerUiState.PeerDisconnected("Your opponent disconnected.")
+                    stopClock()
+                }
             }
 
             is RelayEvent.MoveReceived -> {
@@ -227,14 +214,10 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
                 if (next != null) {
                     _gameState.value = next
                     updateInGameTurn(next)
-
-                    // After receiving a move, we do NOT send state_sync back (peer already did).
-                    // We rely on server's persisted state_sync.
                 }
             }
 
             is RelayEvent.StateSyncReceived -> {
-                // Guest learns the time control here (and host can also accept it on resume)
                 val t = event.initialTimeMs
                 if (t != null && t > 0) {
                     _initialTimeMs.value = t
@@ -261,7 +244,6 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
 
-                    // Save/update local daily entry (for menu previews)
                     if (t == ONE_DAY_MS) {
                         saveOrUpdateDailyGame(
                             roomCode = roomCode ?: "",
@@ -275,6 +257,14 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
 
                     startClockIfNeeded()
                 }
+            }
+
+            is RelayEvent.TimeForfeit -> {
+                // Mark game over immediately in UI
+                stopClock()
+                val winnerSide = if (event.winner == "w") Side.WHITE else Side.BLACK
+                _gameState.update { it.copy(result = GameResult.Checkmate(winner = winnerSide)) }
+                updateInGameTurn(_gameState.value)
             }
 
             is RelayEvent.RemoteError -> {
@@ -329,7 +319,6 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
         if (gs.result != GameResult.Ongoing) return
 
         if (isDaily()) {
-            // Deadline-based (wall clock)
             val deadline = _turnDeadlineEpochMs.value ?: return
             val remaining = deadline - System.currentTimeMillis()
             when (gs.sideToMove) {
@@ -342,14 +331,12 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
 
-        // Normal clock ticking (elapsed realtime)
         val now = SystemClock.elapsedRealtime()
         val prev = lastTick
         lastTick = now
         if (prev == null) return
 
         val delta = max(0L, now - prev)
-
         when (gs.sideToMove) {
             Side.WHITE -> {
                 val next = max(0L, _timeWhiteMs.value - delta)
@@ -377,7 +364,7 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
         stopClock()
     }
 
-    // ── Local daily saved games ─────────────────────────────────────────────
+    // ── Local daily saved games (unchanged from earlier) ─────────────────────
 
     private fun loadDailyList(context: Context): MutableList<JSONObject> {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -404,7 +391,6 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
         turnDeadlineEpochMs: Long?
     ) {
         if (roomCode.isBlank()) return
-
         val ctx = getApplication<Application>().applicationContext
         val list = loadDailyList(ctx)
 
@@ -419,7 +405,7 @@ class MultiplayerViewModel(app: Application) : AndroidViewModel(app) {
             put("updatedAtEpochMs", System.currentTimeMillis())
         }
 
-        if (idx >= 0) list[idx] = obj else list.add(0, obj) // newest first
+        if (idx >= 0) list[idx] = obj else list.add(0, obj)
         saveDailyList(ctx, list)
     }
 
