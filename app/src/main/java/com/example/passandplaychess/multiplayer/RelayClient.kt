@@ -23,24 +23,19 @@ sealed class RelayEvent {
     data class PeerJoined(val role: String, val occupants: Int) : RelayEvent()
     data class PeerLeft(val role: String) : RelayEvent()
     data class MoveReceived(val uci: String, val seq: Int) : RelayEvent()
+
     data class StateSyncReceived(
         val fen: String,
         val sideToMove: String,
         val moveHistory: List<String>,
         val initialTimeMs: Long? = null
     ) : RelayEvent()
+
     data class RemoteError(val message: String) : RelayEvent()
 }
 
 // ── RelayClient ───────────────────────────────────────────────────────────────
 
-/**
- * OkHttp-based WebSocket client that speaks the chess relay protocol.
- *
- * All StateFlow updates and [onEvent] callbacks are delivered on the OkHttp
- * dispatcher thread — callers must marshal to the main thread as needed
- * (ViewModels do this via viewModelScope).
- */
 class RelayClient(private val serverUrl: String) {
 
     private val httpClient = OkHttpClient.Builder()
@@ -56,8 +51,6 @@ class RelayClient(private val serverUrl: String) {
 
     /** Invoked (on the OkHttp thread) whenever a relay event arrives. */
     var onEvent: ((RelayEvent) -> Unit)? = null
-
-    // ── Public API ─────────────────────────────────────────────────────────
 
     fun connect(roomCode: String, role: String) {
         disconnect()
@@ -120,8 +113,6 @@ class RelayClient(private val serverUrl: String) {
         _connectionState.value = ConnectionState.Disconnected
     }
 
-    // ── Internal ───────────────────────────────────────────────────────────
-
     private fun send(json: JSONObject) {
         webSocket?.send(json.toString())
     }
@@ -129,7 +120,7 @@ class RelayClient(private val serverUrl: String) {
     private fun handleMessage(text: String) {
         val msg = runCatching { JSONObject(text) }.getOrNull() ?: return
 
-        when (val type = msg.optString("type")) {
+        when (msg.optString("type")) {
             "welcome" -> {
                 _connectionState.value = ConnectionState.Connected(
                     clientId = msg.optString("clientId"),
@@ -137,6 +128,7 @@ class RelayClient(private val serverUrl: String) {
                     role = msg.optString("role")
                 )
             }
+
             "peer_joined" -> {
                 onEvent?.invoke(
                     RelayEvent.PeerJoined(
@@ -145,9 +137,11 @@ class RelayClient(private val serverUrl: String) {
                     )
                 )
             }
+
             "peer_left" -> {
                 onEvent?.invoke(RelayEvent.PeerLeft(role = msg.optString("role")))
             }
+
             "move" -> {
                 onEvent?.invoke(
                     RelayEvent.MoveReceived(
@@ -156,6 +150,7 @@ class RelayClient(private val serverUrl: String) {
                     )
                 )
             }
+
             "state_sync" -> {
                 val history = msg.optJSONArray("moveHistory")
                 val historyList = buildList {
@@ -175,14 +170,11 @@ class RelayClient(private val serverUrl: String) {
                     )
                 )
             }
-            "error" -> {
-                onEvent?.invoke(RelayEvent.RemoteError(msg.optString("message")))
-            }
-            "ping" -> {
-                send(JSONObject().put("type", "pong"))
-            }
-            "pong" -> { /* heartbeat reply – nothing to do */ }
-            else -> { /* unknown message type – ignore */ }
+
+            "error" -> onEvent?.invoke(RelayEvent.RemoteError(msg.optString("message")))
+            "ping" -> send(JSONObject().put("type", "pong"))
+            "pong" -> { /* ignore */ }
+            else -> { /* ignore */ }
         }
     }
 }
