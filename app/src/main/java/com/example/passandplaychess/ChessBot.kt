@@ -1,13 +1,12 @@
 package com.example.passandplaychess
 
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.random.Random
 
 data class BotConfig(
     val enabled: Boolean,
     val botSide: Side,
-    /** Search depth in plies (half-moves). 1–5 supported; 2–4 recommended for phones. */
+    /** Search depth in plies (half-moves). 1–6 supported; 2–4 recommended for phones. */
     val depth: Int,
     /** Soft time limit per move (ms). Keeps higher depths responsive. */
     val timeLimitMs: Long = 350L
@@ -31,29 +30,18 @@ object ChessBot {
         val deadlineNs = System.nanoTime() + config.timeLimitMs * 1_000_000L
         val maxDepth = config.depth.coerceIn(1, 6)
 
-        // Always have a fallback (random legal move) in case we time out immediately.
         var bestMoveSoFar: Move = rootMoves[rng.nextInt(rootMoves.size)]
         var bestScoreSoFar = Int.MIN_VALUE
 
-        // Iterative deepening: depth 1..maxDepth. If we time out mid-iteration,
-        // we keep the best move from the last completed depth.
         for (d in 1..maxDepth) {
-            val (mv, score, completed) = searchRoot(
-                state = state,
-                botSide = config.botSide,
-                depth = d,
-                deadlineNs = deadlineNs,
-                rng = rng
-            )
-            if (!completed) break
-
-            if (mv != null) {
-                bestMoveSoFar = mv
-                bestScoreSoFar = score
+            val rr = searchRoot(state, depth = d, deadlineNs = deadlineNs, rng = rng)
+            if (!rr.completed) break
+            if (rr.move != null) {
+                bestMoveSoFar = rr.move
+                bestScoreSoFar = rr.score
             }
         }
 
-        // Safety: if something weird happened, still pick a legal move.
         return bestMoveSoFar.toUci()
     }
 
@@ -61,32 +49,28 @@ object ChessBot {
 
     private fun searchRoot(
         state: ChessGameState,
-        botSide: Side,
         depth: Int,
         deadlineNs: Long,
         rng: Random
     ): RootResult {
-        val moves = orderMoves(state, state.allLegalMoves(), botSide)
+        val moves = orderMoves(state, state.allLegalMoves())
 
         var bestScore = Int.MIN_VALUE
         val bestMoves = mutableListOf<Move>()
 
         for (mv in moves) {
             if (System.nanoTime() >= deadlineNs) {
-                return RootResult(
-                    move = bestMoves.randomOrNull(rng),
-                    score = bestScore,
-                    completed = false
-                )
+                return RootResult(bestMoves.randomOrNull(rng), bestScore, completed = false)
             }
 
             val next = state.applyMoveForAnalysis(mv) ?: continue
-            val score = negamax(
+
+            // After we make a move, it becomes opponent-to-move, so negate.
+            val score = -negamax(
                 state = next,
                 depth = depth - 1,
                 alpha = Int.MIN_VALUE + 1,
                 beta = Int.MAX_VALUE,
-                botSide = botSide,
                 deadlineNs = deadlineNs
             )
 
@@ -99,123 +83,117 @@ object ChessBot {
             }
         }
 
-        val chosen = bestMoves.randomOrNull(rng)
-        return RootResult(chosen, bestScore, completed = true)
+        return RootResult(bestMoves.randomOrNull(rng), bestScore, completed = true)
     }
 
     /**
      * Negamax with alpha-beta pruning.
-     * Score is always from botSide's perspective.
+     * IMPORTANT: evaluate() must be from side-to-move's perspective.
      */
     private fun negamax(
         state: ChessGameState,
         depth: Int,
         alpha: Int,
         beta: Int,
-        botSide: Side,
         deadlineNs: Long
     ): Int {
-        if (System.nanoTime() >= deadlineNs) {
-            // Time cutoff: return a static eval of current position.
-            return evaluate(state, botSide)
-        }
+        if (System.nanoTime() >= deadlineNs) return evaluateSideToMove(state)
 
         if (depth <= 0 || state.result != GameResult.Ongoing) {
-            return evaluate(state, botSide)
+            return evaluateSideToMove(state)
         }
 
         val moves = state.allLegalMoves()
-        if (moves.isEmpty()) return evaluate(state, botSide)
+        if (moves.isEmpty()) return evaluateSideToMove(state)
 
         var a = alpha
         var best = Int.MIN_VALUE
 
-        val ordered = orderMoves(state, moves, botSide)
+        val ordered = orderMoves(state, moves)
 
         for (mv in ordered) {
             if (System.nanoTime() >= deadlineNs) break
 
             val next = state.applyMoveForAnalysis(mv) ?: continue
-
-            // Negamax: score flips sign when side to move changes.
             val score = -negamax(
                 state = next,
                 depth = depth - 1,
                 alpha = -beta,
                 beta = -a,
-                botSide = botSide,
                 deadlineNs = deadlineNs
             )
 
             best = max(best, score)
             a = max(a, score)
-            if (a >= beta) break // beta cut-off
+            if (a >= beta) break
         }
 
         return best
     }
 
     /**
-     * Move ordering heuristic:
-     * - captures first (MVV-ish using piece values)
+     * Move ordering:
+     * - captures first (by captured piece value)
      * - promotions next
-     * - everything else
+     * - (optional) a tiny check bonus
      */
-    private fun orderMoves(state: ChessGameState, moves: List<Move>, botSide: Side): List<Move> {
+    private fun orderMoves(state: ChessGameState, moves: List<Move>): List<Move> {
         fun scoreMove(mv: Move): Int {
-            val toPiece = when (mv) {
-                is Move.EnPassant -> Piece(state.sideToMove.opposite(), PieceType.PAWN) // treat as pawn capture
+            val captured = when (mv) {
+                is Move.EnPassant -> Piece(state.sideToMove.opposite(), PieceType.PAWN)
                 else -> state.board.pieceAt(mv.to)
             }
-            val captureScore = if (toPiece != null) pieceValue(toPiece.type) else 0
+            val captureScore = if (captured != null) pieceValue(captured.type) else 0
 
             val promoScore = when (mv) {
                 is Move.Normal -> if (mv.promotion != null) pieceValue(mv.promotion) + 200 else 0
                 else -> 0
             }
 
-            // Small bonus if move gives check (cheap-ish: just apply and ask isInCheck)
-            // NOTE: This costs some, but helps pruning. If you want max speed, remove.
-            val givesCheckBonus = runCatching {
+            // Optional: tiny check bonus. If you want max speed, remove this block.
+            val checkBonus = runCatching {
                 val next = state.applyMoveForAnalysis(mv)
-                if (next != null && next.isInCheck(botSide.opposite())) 25 else 0
+                if (next != null && next.isInCheck(next.sideToMove)) 25 else 0
             }.getOrDefault(0)
 
-            return captureScore * 10 + promoScore + givesCheckBonus
+            return captureScore * 10 + promoScore + checkBonus
         }
 
         return moves.sortedByDescending(::scoreMove)
     }
 
     /**
-     * Static evaluation (fast).
-     * - terminal states heavy
-     * - material only (+ tiny check bonus/penalty)
-     *
-     * IMPORTANT: no mobility term (avoid generating moves during eval).
+     * Static eval from the CURRENT side-to-move perspective.
+     * Positive => good for sideToMove, negative => good for the other side.
      */
-    private fun evaluate(state: ChessGameState, botSide: Side): Int {
+    private fun evaluateSideToMove(state: ChessGameState): Int {
         when (val r = state.result) {
             GameResult.Ongoing -> { /* continue */ }
             is GameResult.Checkmate -> {
-                return if (r.winner == botSide) 1_000_000 else -1_000_000
+                // Winner is the side who delivered mate.
+                return if (r.winner == state.sideToMove) 1_000_000 else -1_000_000
             }
-            else -> return 0 // draws
+            else -> return 0
         }
 
-        var score = 0
+        var materialWhite = 0
+        var materialBlack = 0
         for ((_, p) in state.board.allPieces()) {
             val v = pieceValue(p.type)
-            score += if (p.side == botSide) v else -v
+            if (p.side == Side.WHITE) materialWhite += v else materialBlack += v
         }
 
-        // Tiny check heuristic (cheap enough)
-        if (state.isInCheck(botSide)) score -= 15
-        if (state.isInCheck(botSide.opposite())) score += 15
+        val materialFromWhite = materialWhite - materialBlack
+        val scoreFromSideToMove =
+            if (state.sideToMove == Side.WHITE) materialFromWhite else -materialFromWhite
 
-        // Slight tempo bonus: prefer positions where it's NOT opponent's advantage to move
-        // (kept tiny; remove if you want)
-        if (state.sideToMove == botSide) score += 2 else score -= 2
+        // Tiny check heuristic (still from side-to-move perspective)
+        var score = scoreFromSideToMove
+        if (state.isInCheck(state.sideToMove)) score -= 15
+        if (state.isInCheck(state.sideToMove.opposite())) score += 15
+
+        // Tiny tempo
+        score += 2
 
         return score
     }
