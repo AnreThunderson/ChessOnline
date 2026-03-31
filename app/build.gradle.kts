@@ -24,6 +24,7 @@ android {
     buildTypes {
         debug {
             buildConfigField("String", "WS_BASE_URL", "\"ws://10.0.2.2:3000\"")
+            buildConfigField("String", "DONATION_URL", "\"REPLACE_ME\"")
         }
         release {
             isMinifyEnabled = false
@@ -32,6 +33,7 @@ android {
                 "proguard-rules.pro"
             )
             buildConfigField("String", "WS_BASE_URL", "\"wss://your-chess-relay.onrender.com\"")
+            buildConfigField("String", "DONATION_URL", "\"REPLACE_ME\"")
         }
     }
     compileOptions {
