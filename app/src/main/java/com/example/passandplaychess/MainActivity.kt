@@ -1,7 +1,10 @@
 package com.example.passandplaychess
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
@@ -41,7 +44,6 @@ private const val KEY_LOCAL_GAME = "local_game_state_v1"
 
 // Daily saved games
 private const val KEY_DAILY_GAMES = "daily_games_v1"
-private const val ONE_DAY_MS = 86_400_000L
 
 private sealed class AppScreen {
     data object Menu : AppScreen()
@@ -59,8 +61,8 @@ data class SavedDailyGame(
     val role: String,              // "host" or "guest"
     val fen: String,
     val sideToMove: String,         // "w" or "b"
-    val initialTimeMs: Long,        // should be ONE_DAY_MS for daily
-    val turnDeadlineEpochMs: Long?, // server-provided
+    val initialTimeMs: Long,
+    val turnDeadlineEpochMs: Long?,
     val updatedAtEpochMs: Long
 )
 
@@ -98,6 +100,33 @@ private fun AppNavigation() {
             resumeRole = s.resume?.role
         )
     }
+}
+
+// ── Donation helper ──────────────────────────────────────────────────────────
+
+private fun openDonationLink(context: Context) {
+    val url = BuildConfig.DONATION_URL?.trim().orEmpty()
+    if (url.isBlank() || url == "REPLACE_ME") {
+        Toast.makeText(context, "Donation link is not configured.", Toast.LENGTH_LONG).show()
+        return
+    }
+
+    val uri = runCatching { Uri.parse(url) }.getOrNull()
+    if (uri == null || uri.scheme.isNullOrBlank()) {
+        Toast.makeText(context, "Donation link is invalid.", Toast.LENGTH_LONG).show()
+        return
+    }
+
+    val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
+    if (intent.resolveActivity(context.packageManager) == null) {
+        Toast.makeText(context, "No browser found to open donation link.", Toast.LENGTH_LONG).show()
+        return
+    }
+
+    context.startActivity(intent)
 }
 
 // ── Daily persistence helpers ───────────────────────────────────────────────
@@ -161,7 +190,6 @@ private fun MenuScreen(
     val context = LocalContext.current
     var dailyGames by remember { mutableStateOf(loadDailyGames(context)) }
 
-    // refresh when coming back to menu
     LaunchedEffect(Unit) {
         dailyGames = loadDailyGames(context)
     }
@@ -212,8 +240,16 @@ private fun MenuScreen(
         Button(onClick = onLocalPlay, modifier = Modifier.fillMaxWidth()) {
             Text("Local Play (pass and play)")
         }
+
         Button(onClick = onMultiplayer, modifier = Modifier.fillMaxWidth()) {
             Text("Online Multiplayer")
+        }
+
+        OutlinedButton(
+            onClick = { openDonationLink(context) },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Donate")
         }
     }
 }
@@ -236,7 +272,6 @@ private fun DailyGameRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Board preview (clickable)
         DailyBoardPreview(
             fen = game.fen,
             modifier = Modifier
