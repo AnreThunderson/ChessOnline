@@ -24,8 +24,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.passandplaychess.*
 import com.example.passandplaychess.R as AppR
 
-// ── Entry point ───────────────────────────────────────────────────────────────
-
 @Composable
 fun MultiplayerScreen(
     onBack: () -> Unit,
@@ -33,47 +31,26 @@ fun MultiplayerScreen(
 ) {
     val uiState by vm.uiState.collectAsState()
     val gameState by vm.gameState.collectAsState()
-    val selectedMinutes by vm.selectedMinutes.collectAsState()
-
-    // New: time control must be chosen before showing lobby
-    var timeChosen by remember { mutableStateOf(false) }
 
     when (val s = uiState) {
         is MultiplayerUiState.Idle -> {
-            if (!timeChosen) {
-                TimeControlScreen(
-                    selectedMinutes = selectedMinutes,
-                    onSelect = { m ->
-                        vm.setTimeControlMinutes(m)
-                        timeChosen = true
-                    },
-                    onBack = onBack
-                )
-            } else {
-                LobbyScreen(
-                    onBack = onBack,
-                    onHost = { code -> vm.hostGame(code) },
-                    onJoin = { code -> vm.joinGame(code) }
-                )
-            }
+            LobbyScreen(
+                onBack = onBack,
+                vm = vm,
+                onHost = { code -> vm.hostGame(code) },
+                onJoin = { code -> vm.joinGame(code) }
+            )
         }
-
         is MultiplayerUiState.Connecting -> {
             CenteredStatus("Connecting…")
         }
-
         is MultiplayerUiState.WaitingForPeer -> {
             WaitingScreen(
                 roomCode = s.roomCode,
                 role = s.role,
-                onCancel = {
-                    vm.leaveGame()
-                    timeChosen = false
-                    onBack()
-                }
+                onCancel = { vm.leaveGame(); onBack() }
             )
         }
-
         is MultiplayerUiState.InGame -> {
             val timeWhiteMs by vm.timeWhiteMs.collectAsState()
             val timeBlackMs by vm.timeBlackMs.collectAsState()
@@ -86,83 +63,20 @@ fun MultiplayerScreen(
                 timeWhiteMs = timeWhiteMs,
                 timeBlackMs = timeBlackMs,
                 onTap = { sq -> vm.onTap(sq) },
-                onLeave = {
-                    vm.leaveGame()
-                    timeChosen = false
-                    onBack()
-                }
+                onLeave = { vm.leaveGame(); onBack() }
             )
         }
-
         is MultiplayerUiState.PeerDisconnected -> {
             DisconnectedScreen(
                 message = s.message,
-                onBack = {
-                    vm.leaveGame()
-                    timeChosen = false
-                    onBack()
-                }
+                onBack = { vm.leaveGame(); onBack() }
             )
         }
-
         is MultiplayerUiState.Failure -> {
             ErrorScreen(
                 message = s.message,
-                onBack = {
-                    vm.leaveGame()
-                    timeChosen = false
-                    onBack()
-                }
+                onBack = { vm.leaveGame(); onBack() }
             )
-        }
-    }
-}
-
-// ── Time control screen ───────────────────────────────────────────────────────
-
-@Composable
-private fun TimeControlScreen(
-    selectedMinutes: Int,
-    onSelect: (Int) -> Unit,
-    onBack: () -> Unit
-) {
-    val options = listOf(1, 3, 5, 10)
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text("Choose Time Control", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Text(
-            "Each player gets this much total time for the whole game.",
-            fontSize = 13.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
-
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            options.forEach { minutes ->
-                val selected = minutes == selectedMinutes
-                Button(
-                    onClick = { onSelect(minutes) },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = if (selected) ButtonDefaults.buttonColors()
-                    else ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-                ) {
-                    Text("$minutes minute${if (minutes == 1) "" else "s"}")
-                }
-            }
-        }
-
-        Spacer(Modifier.weight(1f))
-        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
-            Text("Back")
         }
     }
 }
@@ -172,6 +86,7 @@ private fun TimeControlScreen(
 @Composable
 private fun LobbyScreen(
     onBack: () -> Unit,
+    vm: MultiplayerViewModel,
     onHost: (String) -> Unit,
     onJoin: (String) -> Unit
 ) {
@@ -192,7 +107,10 @@ private fun LobbyScreen(
         }
 
         if (tab == 0) {
-            HostTab(onHost = onHost)
+            HostTab(
+                vm = vm,
+                onHost = onHost
+            )
         } else {
             JoinTab(onJoin = onJoin)
         }
@@ -205,7 +123,15 @@ private fun LobbyScreen(
 }
 
 @Composable
-private fun HostTab(onHost: (String) -> Unit) {
+private fun HostTab(
+    vm: MultiplayerViewModel,
+    onHost: (String) -> Unit
+) {
+    // Step 1: pick time. Step 2: show room code and create.
+    var step by remember { mutableIntStateOf(0) } // 0=choose time, 1=show code
+    val selectedMinutes by vm.selectedMinutes.collectAsState()
+
+    // Generate a random room code once (same behavior as before)
     val roomCode = remember { generateRoomCode() }
 
     Column(
@@ -213,24 +139,74 @@ private fun HostTab(onHost: (String) -> Unit) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Text("Share this code with your opponent:", fontSize = 14.sp)
-        Text(
-            text = roomCode,
-            fontSize = 36.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 8.sp,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Text(
-            text = "You will play as White.",
-            fontSize = 13.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Button(
-            onClick = { onHost(roomCode) },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Create Room & Wait")
+        if (step == 0) {
+            Text("Choose time control", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+
+            TimeChoiceRow(
+                selectedMinutes = selectedMinutes,
+                onSelect = { vm.setTimeControlMinutes(it) }
+            )
+
+            Text(
+                text = "Each player gets ${selectedMinutes} minute${if (selectedMinutes == 1) "" else "s"} total.",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+
+            Button(
+                onClick = { step = 1 },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Next")
+            }
+        } else {
+            Text("Share this code with your opponent:", fontSize = 14.sp)
+            Text(
+                text = roomCode,
+                fontSize = 36.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 8.sp,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = "Time: ${selectedMinutes} min • You will play as White.",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(
+                onClick = { onHost(roomCode) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Create Room & Wait")
+            }
+            OutlinedButton(
+                onClick = { step = 0 },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Change time")
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimeChoiceRow(
+    selectedMinutes: Int,
+    onSelect: (Int) -> Unit
+) {
+    val opts = listOf(1, 3, 5, 10)
+    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        opts.forEach { m ->
+            val selected = m == selectedMinutes
+            Button(
+                onClick = { onSelect(m) },
+                modifier = Modifier.fillMaxWidth(),
+                colors = if (selected) ButtonDefaults.buttonColors()
+                else ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+            ) {
+                Text("$m minute${if (m == 1) "" else "s"}")
+            }
         }
     }
 }
@@ -378,11 +354,7 @@ private fun OnlineStatusBar(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        // Timers
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(
                 text = "White: ${formatClock(timeWhiteMs)}",
                 fontSize = 12.sp,
