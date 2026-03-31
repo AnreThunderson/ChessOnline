@@ -1,8 +1,170 @@
 package com.example.passandplaychess
 
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.random.Random
 
-enum class Side { WHITE, BLACK;
+// ── Bot (offline AI) ──────────────────────────────────────────────────────────
+
+data class BotConfig(
+    val enabled: Boolean,
+    val botSide: Side,
+    /** Search depth in plies (half-moves). 1–4 recommended for phones. */
+    val depth: Int
+)
+
+object ChessBot {
+
+    /** Returns a UCI move string (e.g. "e2e4") or null if no legal move exists. */
+    fun chooseMoveUci(
+        state: ChessGameState,
+        config: BotConfig,
+        rng: Random = Random.Default
+    ): String? {
+        if (!config.enabled) return null
+        if (state.result != GameResult.Ongoing) return null
+        if (state.sideToMove != config.botSide) return null
+
+        val moves = state.allLegalMoves()
+        if (moves.isEmpty()) return null
+
+        val depth = config.depth.coerceIn(1, 5)
+
+        // Score from bot's perspective: maximize when bot to move, minimize otherwise.
+        val maximizing = (state.sideToMove == config.botSide)
+
+        // Evaluate all moves; keep a small set of best moves to add variety.
+        var bestScore = if (maximizing) Int.MIN_VALUE else Int.MAX_VALUE
+        val bestMoves = mutableListOf<Move>()
+
+        for (mv in moves) {
+            val next = state.applyMoveForAnalysis(mv) ?: continue
+            val score = minimax(
+                state = next,
+                depth = depth - 1,
+                alpha = Int.MIN_VALUE,
+                beta = Int.MAX_VALUE,
+                botSide = config.botSide
+            )
+
+            if (maximizing) {
+                if (score > bestScore) {
+                    bestScore = score
+                    bestMoves.clear()
+                    bestMoves.add(mv)
+                } else if (score == bestScore) {
+                    bestMoves.add(mv)
+                }
+            } else {
+                if (score < bestScore) {
+                    bestScore = score
+                    bestMoves.clear()
+                    bestMoves.add(mv)
+                } else if (score == bestScore) {
+                    bestMoves.add(mv)
+                }
+            }
+        }
+
+        val chosen =
+            if (bestMoves.isNotEmpty()) bestMoves[rng.nextInt(bestMoves.size)]
+            else moves[rng.nextInt(moves.size)]
+
+        return chosen.toUci()
+    }
+
+    private fun minimax(
+        state: ChessGameState,
+        depth: Int,
+        alpha: Int,
+        beta: Int,
+        botSide: Side
+    ): Int {
+        if (depth <= 0 || state.result != GameResult.Ongoing) {
+            return evaluate(state, botSide)
+        }
+
+        val moves = state.allLegalMoves()
+        if (moves.isEmpty()) return evaluate(state, botSide)
+
+        var a = alpha
+        var b = beta
+
+        val maximizing = state.sideToMove == botSide
+
+        if (maximizing) {
+            var best = Int.MIN_VALUE
+            for (mv in moves) {
+                val next = state.applyMoveForAnalysis(mv) ?: continue
+                val score = minimax(next, depth - 1, a, b, botSide)
+                best = max(best, score)
+                a = max(a, best)
+                if (a >= b) break // beta cut
+            }
+            return best
+        } else {
+            var best = Int.MAX_VALUE
+            for (mv in moves) {
+                val next = state.applyMoveForAnalysis(mv) ?: continue
+                val score = minimax(next, depth - 1, a, b, botSide)
+                best = min(best, score)
+                b = min(b, best)
+                if (a >= b) break // alpha cut
+            }
+            return best
+        }
+    }
+
+    /**
+     * Simple evaluation:
+     * - material (dominant)
+     * - small mobility bonus
+     * - terminal states heavily weighted
+     */
+    private fun evaluate(state: ChessGameState, botSide: Side): Int {
+        when (val r = state.result) {
+            GameResult.Ongoing -> { /* continue */ }
+            is GameResult.Checkmate -> {
+                // winner gets big score from bot perspective
+                return if (r.winner == botSide) 1_000_000 else -1_000_000
+            }
+            else -> return 0 // draws
+        }
+
+        var score = 0
+
+        for ((_, p) in state.board.allPieces()) {
+            val v = pieceValue(p.type)
+            score += if (p.side == botSide) v else -v
+        }
+
+        // Mobility (tiny): number of legal moves for side to move
+        val mobility = state.allLegalMoves().size
+        score += if (state.sideToMove == botSide) mobility else -mobility
+
+        // In-check penalty (tiny)
+        if (state.isInCheck(botSide)) score -= 10
+        if (state.isInCheck(botSide.opposite())) score += 10
+
+        return score
+    }
+
+    private fun pieceValue(type: PieceType): Int = when (type) {
+        PieceType.PAWN -> 100
+        PieceType.KNIGHT -> 320
+        PieceType.BISHOP -> 330
+        PieceType.ROOK -> 500
+        PieceType.QUEEN -> 900
+        PieceType.KING -> 0
+    }
+}
+
+// ── Model ────────────────────────────────────────────────────────────────────��
+
+enum class Side {
+    WHITE, BLACK;
+
     fun opposite(): Side = if (this == WHITE) BLACK else WHITE
 }
 
@@ -18,6 +180,7 @@ data class Piece(val side: Side, val type: PieceType) {
             PieceType.KNIGHT -> "♘"
             PieceType.PAWN -> "♙"
         }
+
         Side.BLACK -> when (type) {
             PieceType.KING -> "♚"
             PieceType.QUEEN -> "♛"
@@ -33,6 +196,7 @@ data class Square(val file: Int, val rank: Int) {
     init {
         require(file in 0..7 && rank in 0..7)
     }
+
     override fun toString(): String = "${('a' + file)}${rank + 1}"
 }
 
@@ -267,7 +431,11 @@ data class ChessGameState(
             if (p.side != sideToMove) return TapResult(this, "Not your piece")
             val moves = legalMovesFrom(sq)
             return TapResult(
-                newState = copy(selected = sq, legalTargets = moves.map { it.to }.toSet(), lastMessage = ""),
+                newState = copy(
+                    selected = sq,
+                    legalTargets = moves.map { it.to }.toSet(),
+                    lastMessage = ""
+                ),
                 message = ""
             )
         }
@@ -302,10 +470,32 @@ data class ChessGameState(
     }
 
     fun isInCheck(side: Side): Boolean {
-        val kingSq = board.allPieces().firstOrNull { it.second.side == side && it.second.type == PieceType.KING }?.first
-            ?: return false
+        val kingSq = board.allPieces()
+            .firstOrNull { it.second.side == side && it.second.type == PieceType.KING }
+            ?.first ?: return false
         return isSquareAttacked(kingSq, side.opposite())
     }
+
+    // ── Added for offline bot support ──────────────────────────────────────
+
+    /** Public: all legal moves for the side to move (needed for the offline bot). */
+    fun allLegalMoves(): List<Move> = generateAllLegalMoves(sideToMove)
+
+    /**
+     * Public: apply a Move and return the resulting state.
+     * Used for bot search; validates legality before applying.
+     */
+    fun applyMoveForAnalysis(mv: Move): ChessGameState? {
+        val legal = legalMovesFrom(mv.from)
+        if (legal.none { it == mv }) return null
+
+        return applyMove(mv)
+            .copy(selected = null, legalTargets = emptySet(), lastMessage = "")
+            .withRepetitionUpdated()
+            .withResultRecomputed()
+    }
+
+    // ── Move generation ────────────────────────────────────────────────────
 
     private fun legalMovesFrom(from: Square): List<Move> {
         val piece = board.pieceAt(from) ?: return emptyList()
@@ -333,9 +523,27 @@ data class ChessGameState(
         return when (piece.type) {
             PieceType.PAWN -> pawnMoves(from, piece.side)
             PieceType.KNIGHT -> knightMoves(from, piece.side)
-            PieceType.BISHOP -> slidingMoves(from, piece.side, dirs = listOf(1 to 1, 1 to -1, -1 to 1, -1 to -1))
-            PieceType.ROOK -> slidingMoves(from, piece.side, dirs = listOf(1 to 0, -1 to 0, 0 to 1, 0 to -1))
-            PieceType.QUEEN -> slidingMoves(from, piece.side, dirs = listOf(1 to 1, 1 to -1, -1 to 1, -1 to -1, 1 to 0, -1 to 0, 0 to 1, 0 to -1))
+            PieceType.BISHOP -> slidingMoves(
+                from,
+                piece.side,
+                dirs = listOf(1 to 1, 1 to -1, -1 to 1, -1 to -1)
+            )
+
+            PieceType.ROOK -> slidingMoves(
+                from,
+                piece.side,
+                dirs = listOf(1 to 0, -1 to 0, 0 to 1, 0 to -1)
+            )
+
+            PieceType.QUEEN -> slidingMoves(
+                from,
+                piece.side,
+                dirs = listOf(
+                    1 to 1, 1 to -1, -1 to 1, -1 to -1,
+                    1 to 0, -1 to 0, 0 to 1, 0 to -1
+                )
+            )
+
             PieceType.KING -> kingMoves(from, piece.side)
         }
     }
@@ -439,7 +647,12 @@ data class ChessGameState(
                     if (rights.wk && canCastleThrough(side, listOf(Square(5, 0), Square(6, 0))) &&
                         board.pieceAt(Square(7, 0))?.let { it.side == side && it.type == PieceType.ROOK } == true
                     ) {
-                        out += Move.Castle(from, Square(6, 0), rookFrom = Square(7, 0), rookTo = Square(5, 0))
+                        out += Move.Castle(
+                            from,
+                            Square(6, 0),
+                            rookFrom = Square(7, 0),
+                            rookTo = Square(5, 0)
+                        )
                     }
                     if (rights.wq && canCastleThrough(side, listOf(Square(3, 0), Square(2, 0))) &&
                         board.pieceAt(Square(0, 0))?.let { it.side == side && it.type == PieceType.ROOK } == true &&
@@ -447,7 +660,12 @@ data class ChessGameState(
                     ) {
                         // squares between king and rook: d1,c1,b1 (b1 already checked)
                         if (board.pieceAt(Square(3, 0)) == null && board.pieceAt(Square(2, 0)) == null) {
-                            out += Move.Castle(from, Square(2, 0), rookFrom = Square(0, 0), rookTo = Square(3, 0))
+                            out += Move.Castle(
+                                from,
+                                Square(2, 0),
+                                rookFrom = Square(0, 0),
+                                rookTo = Square(3, 0)
+                            )
                         }
                     }
                 }
@@ -457,14 +675,24 @@ data class ChessGameState(
                     if (rights.bk && canCastleThrough(side, listOf(Square(5, 7), Square(6, 7))) &&
                         board.pieceAt(Square(7, 7))?.let { it.side == side && it.type == PieceType.ROOK } == true
                     ) {
-                        out += Move.Castle(from, Square(6, 7), rookFrom = Square(7, 7), rookTo = Square(5, 7))
+                        out += Move.Castle(
+                            from,
+                            Square(6, 7),
+                            rookFrom = Square(7, 7),
+                            rookTo = Square(5, 7)
+                        )
                     }
                     if (rights.bq && canCastleThrough(side, listOf(Square(3, 7), Square(2, 7))) &&
                         board.pieceAt(Square(0, 7))?.let { it.side == side && it.type == PieceType.ROOK } == true &&
                         board.pieceAt(Square(1, 7)) == null
                     ) {
                         if (board.pieceAt(Square(3, 7)) == null && board.pieceAt(Square(2, 7)) == null) {
-                            out += Move.Castle(from, Square(2, 7), rookFrom = Square(0, 7), rookTo = Square(3, 7))
+                            out += Move.Castle(
+                                from,
+                                Square(2, 7),
+                                rookFrom = Square(0, 7),
+                                rookTo = Square(3, 7)
+                            )
                         }
                     }
                 }
@@ -500,10 +728,24 @@ data class ChessGameState(
                 val dir = if (piece.side == Side.WHITE) 1 else -1
                 dr == dir && abs(df) == 1
             }
+
             PieceType.KNIGHT -> (abs(df) == 1 && abs(dr) == 2) || (abs(df) == 2 && abs(dr) == 1)
-            PieceType.BISHOP -> attacksSliding(from, target, dirs = listOf(1 to 1, 1 to -1, -1 to 1, -1 to -1))
+            PieceType.BISHOP -> attacksSliding(
+                from,
+                target,
+                dirs = listOf(1 to 1, 1 to -1, -1 to 1, -1 to -1)
+            )
+
             PieceType.ROOK -> attacksSliding(from, target, dirs = listOf(1 to 0, -1 to 0, 0 to 1, 0 to -1))
-            PieceType.QUEEN -> attacksSliding(from, target, dirs = listOf(1 to 1, 1 to -1, -1 to 1, -1 to -1, 1 to 0, -1 to 0, 0 to 1, 0 to -1))
+            PieceType.QUEEN -> attacksSliding(
+                from,
+                target,
+                dirs = listOf(
+                    1 to 1, 1 to -1, -1 to 1, -1 to -1,
+                    1 to 0, -1 to 0, 0 to 1, 0 to -1
+                )
+            )
+
             PieceType.KING -> abs(df) <= 1 && abs(dr) <= 1
         }
     }
@@ -540,10 +782,21 @@ data class ChessGameState(
         if (moving.type == PieceType.PAWN || capturedPiece != null) nHalfmove = 0
 
         // Update castling rights if king/rook moves or rook is captured
-        fun removeWhiteKingSide() { nCastling = nCastling.copy(wk = false) }
-        fun removeWhiteQueenSide() { nCastling = nCastling.copy(wq = false) }
-        fun removeBlackKingSide() { nCastling = nCastling.copy(bk = false) }
-        fun removeBlackQueenSide() { nCastling = nCastling.copy(bq = false) }
+        fun removeWhiteKingSide() {
+            nCastling = nCastling.copy(wk = false)
+        }
+
+        fun removeWhiteQueenSide() {
+            nCastling = nCastling.copy(wq = false)
+        }
+
+        fun removeBlackKingSide() {
+            nCastling = nCastling.copy(bk = false)
+        }
+
+        fun removeBlackQueenSide() {
+            nCastling = nCastling.copy(bq = false)
+        }
 
         // If moving king, lose both rights
         if (moving.type == PieceType.KING) {
@@ -577,7 +830,8 @@ data class ChessGameState(
             is Move.Normal -> {
                 nb = nb.withPiece(mv.from, null)
 
-                val placedPiece = if (mv.promotion != null) Piece(moving.side, mv.promotion) else moving
+                val placedPiece =
+                    if (mv.promotion != null) Piece(moving.side, mv.promotion) else moving
                 nb = nb.withPiece(mv.to, placedPiece)
 
                 // Set en passant target if a pawn moved 2 squares
@@ -596,7 +850,6 @@ data class ChessGameState(
             is Move.Castle -> {
                 nb = nb.withPiece(mv.from, null)
                 nb = nb.withPiece(mv.to, moving)
-                val rook = nb.pieceAt(mv.rookFrom) // note: rook still at rookFrom in original board, but we changed king; so read from original board instead
                 val rookOriginal = board.pieceAt(mv.rookFrom)
                 nb = nb.withPiece(mv.rookFrom, null)
                 nb = nb.withPiece(mv.rookTo, rookOriginal)
@@ -652,7 +905,7 @@ data class ChessGameState(
         return copy(positionCounts = newCounts.toMap())
     }
 
-    // ── Public helpers for online multiplayer ─────────────────────────────────
+    // ── Public helpers for online multiplayer ───────────────────────────────
 
     /**
      * Finds the legal move matching the given UCI string and applies it.
@@ -697,7 +950,9 @@ data class ChessGameState(
                 if (p == null) {
                     empty++
                 } else {
-                    if (empty > 0) { sb.append(empty); empty = 0 }
+                    if (empty > 0) {
+                        sb.append(empty); empty = 0
+                    }
                     val ch = when (p.type) {
                         PieceType.KING -> 'K'
                         PieceType.QUEEN -> 'Q'
@@ -749,6 +1004,7 @@ data class ChessGameState(
                             PieceType.KNIGHT -> 'N'
                             PieceType.PAWN -> 'P'
                         }
+
                         Side.BLACK -> when (p.type) {
                             PieceType.KING -> 'k'
                             PieceType.QUEEN -> 'q'
@@ -757,6 +1013,7 @@ data class ChessGameState(
                             PieceType.KNIGHT -> 'n'
                             PieceType.PAWN -> 'p'
                         }
+
                         null -> '.'
                     }
                 )
@@ -786,8 +1043,12 @@ fun Move.toUci(): String {
             PieceType.ROOK -> "r"
             PieceType.BISHOP -> "b"
             PieceType.KNIGHT -> "n"
+            // These shouldn't occur in real chess promotion, but make the when exhaustive.
+            PieceType.KING -> "k"
+            PieceType.PAWN -> "p"
             null -> ""
         }
+
         else -> ""
     }
     return "$from$to$promo"
@@ -810,3 +1071,7 @@ private fun isInsufficientMaterial(board: Board): Boolean {
         val squares = board.allPieces().filter { it.second.type == PieceType.BISHOP }.map { it.first }
         val colors = squares.map { (it.file + it.rank) % 2 }
         if (colors.size == 2 && colors[0] == colors[1]) return true
+    }
+
+    return false
+}
