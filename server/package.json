@@ -9,6 +9,7 @@
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts"
   },
   "dependencies": {
+    "pg": "^8.11.5",
     "ws": "^8.18.0"
   },
   "devDependencies": {
