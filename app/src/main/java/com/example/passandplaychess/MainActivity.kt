@@ -150,7 +150,9 @@ private fun ChessScreen(onBack: () -> Unit) {
     ) {
         Header(
             state = state,
-            onNewGame = { state = ChessGameState.initial() },
+            onNewGame = {
+                state = ChessGameState.initial()
+            },
             onClearSelection = { state = state.copy(selected = null, legalTargets = emptySet(), lastMessage = "") },
             onBack = onBack
         )
@@ -159,6 +161,7 @@ private fun ChessScreen(onBack: () -> Unit) {
             vsBot = vsBot,
             onVsBotChange = { enabled ->
                 vsBot = enabled
+                // If enabling and it's bot's move, act immediately.
                 maybeMakeBotMove()
             },
             botSide = botSide,
@@ -176,7 +179,7 @@ private fun ChessScreen(onBack: () -> Unit) {
         ChessBoard(
             state = state,
             onTap = { sq ->
-                // If it's bot's turn, ignore taps
+                // If it's bot's turn, ignore taps (prevents cheating / UI weirdness)
                 if (vsBot && state.sideToMove == botSide) return@ChessBoard
 
                 val res = state.handleTap(sq)
@@ -214,6 +217,7 @@ private fun BotControls(
 
         if (!vsBot) return
 
+        // Side picker
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Bot plays:", modifier = Modifier.width(80.dp))
             Button(
@@ -226,6 +230,7 @@ private fun BotControls(
             ) { Text("Black") }
         }
 
+        // Difficulty slider (depth)
         Column {
             Text("Difficulty: $difficulty", fontWeight = FontWeight.SemiBold)
             Slider(
@@ -295,6 +300,7 @@ private fun Footer(state: ChessGameState) {
 }
 
 private fun Piece.drawableResIdOrNull(): Int? {
+    // We map using your existing Unicode piece characters.
     return when (this.toUnicode()) {
         // White
         "♔" -> AppR.drawable.chess_klt45
@@ -337,7 +343,8 @@ private fun ChessBoard(
                 for (file in 0..7) {
                     val sq = Square(file, rank)
                     val piece = state.board.pieceAt(sq)
-                    val isLight = (file + rank) % 2 == 0
+                    // FIX: a1 must be dark, so light squares are (file+rank) odd.
+                    val isLight = (file + rank) % 2 == 1
                     val isSelected = state.selected == sq
                     val isTarget = state.legalTargets.contains(sq)
 
