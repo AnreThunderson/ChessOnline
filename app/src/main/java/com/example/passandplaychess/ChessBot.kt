@@ -14,7 +14,11 @@ data class BotConfig(
 object ChessBot {
 
     /** Returns a UCI move string (e.g. "e2e4") or null if no legal move exists. */
-    fun chooseMoveUci(state: ChessGameState, config: BotConfig, rng: Random = Random.Default): String? {
+    fun chooseMoveUci(
+        state: ChessGameState,
+        config: BotConfig,
+        rng: Random = Random.Default
+    ): String? {
         if (!config.enabled) return null
         if (state.result != GameResult.Ongoing) return null
         if (state.sideToMove != config.botSide) return null
@@ -23,11 +27,8 @@ object ChessBot {
         if (moves.isEmpty()) return null
 
         val depth = config.depth.coerceIn(1, 5)
-
-        // Score from bot's perspective: maximize when bot to move, minimize otherwise.
         val maximizing = (state.sideToMove == config.botSide)
 
-        // Evaluate all moves; keep a small set of best moves to add variety.
         var bestScore = if (maximizing) Int.MIN_VALUE else Int.MAX_VALUE
         val bestMoves = mutableListOf<Move>()
 
@@ -83,7 +84,6 @@ object ChessBot {
 
         var a = alpha
         var b = beta
-
         val maximizing = state.sideToMove == botSide
 
         if (maximizing) {
@@ -93,7 +93,7 @@ object ChessBot {
                 val score = minimax(next, depth - 1, a, b, botSide)
                 best = max(best, score)
                 a = max(a, best)
-                if (a >= b) break // beta cut
+                if (a >= b) break
             }
             return best
         } else {
@@ -103,7 +103,7 @@ object ChessBot {
                 val score = minimax(next, depth - 1, a, b, botSide)
                 best = min(best, score)
                 b = min(b, best)
-                if (a >= b) break // alpha cut
+                if (a >= b) break
             }
             return best
         }
@@ -119,24 +119,21 @@ object ChessBot {
         when (val r = state.result) {
             GameResult.Ongoing -> { /* continue */ }
             is GameResult.Checkmate -> {
-                // winner gets big score from bot perspective
                 return if (r.winner == botSide) 1_000_000 else -1_000_000
             }
             else -> return 0 // draws
         }
 
         var score = 0
-
         for ((_, p) in state.board.allPieces()) {
             val v = pieceValue(p.type)
             score += if (p.side == botSide) v else -v
         }
 
-        // Mobility (tiny): number of legal moves for side to move
+        // Mobility (tiny)
         val mobility = state.allLegalMoves().size
         score += if (state.sideToMove == botSide) mobility else -mobility
 
-        // In-check penalty (tiny)
         if (state.isInCheck(botSide)) score -= 10
         if (state.isInCheck(botSide.opposite())) score += 10
 
