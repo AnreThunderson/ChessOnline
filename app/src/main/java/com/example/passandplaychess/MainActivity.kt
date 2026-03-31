@@ -103,9 +103,16 @@ private fun AppNavigation() {
 }
 
 // ── Donation helper ──────────────────────────────────────────────────────────
+//
+// Replaces the old version that used resolveActivity().
+// Some devices return null for resolveActivity() even though a browser exists.
+// We instead attempt startActivity() and catch failures. Also strips surrounding quotes
+// in case a buildConfigField is defined as "\"https://...\"".
 
 private fun openDonationLink(context: Context) {
-    val url = BuildConfig.DONATION_URL?.trim().orEmpty()
+    val raw = (BuildConfig.DONATION_URL ?: "").trim()
+    val url = raw.removeSurrounding("\"") // handles "\"https://...\"" safely
+
     if (url.isBlank() || url == "REPLACE_ME") {
         Toast.makeText(context, "Donation link is not configured.", Toast.LENGTH_LONG).show()
         return
@@ -113,20 +120,24 @@ private fun openDonationLink(context: Context) {
 
     val uri = runCatching { Uri.parse(url) }.getOrNull()
     if (uri == null || uri.scheme.isNullOrBlank()) {
-        Toast.makeText(context, "Donation link is invalid.", Toast.LENGTH_LONG).show()
+        Toast.makeText(context, "Donation link is invalid: $url", Toast.LENGTH_LONG).show()
         return
     }
 
     val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+        addCategory(Intent.CATEGORY_BROWSABLE)
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
 
-    if (intent.resolveActivity(context.packageManager) == null) {
-        Toast.makeText(context, "No browser found to open donation link.", Toast.LENGTH_LONG).show()
-        return
+    try {
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Toast.makeText(
+            context,
+            "Could not open donation link: ${e.message ?: "unknown error"}",
+            Toast.LENGTH_LONG
+        ).show()
     }
-
-    context.startActivity(intent)
 }
 
 // ── Daily persistence helpers ───────────────────────────────────────────────
