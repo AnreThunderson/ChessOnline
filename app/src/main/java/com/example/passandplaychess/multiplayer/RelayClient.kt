@@ -10,8 +10,6 @@ import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-// ── Domain types ──────────────────────────────────────────────────────────────
-
 sealed class ConnectionState {
     data object Disconnected : ConnectionState()
     data object Connecting : ConnectionState()
@@ -28,13 +26,12 @@ sealed class RelayEvent {
         val fen: String,
         val sideToMove: String,
         val moveHistory: List<String>,
-        val initialTimeMs: Long? = null
+        val initialTimeMs: Long? = null,
+        val turnDeadlineEpochMs: Long? = null
     ) : RelayEvent()
 
     data class RemoteError(val message: String) : RelayEvent()
 }
-
-// ── RelayClient ───────────────────────────────────────────────────────────────
 
 class RelayClient(private val serverUrl: String) {
 
@@ -161,12 +158,16 @@ class RelayClient(private val serverUrl: String) {
                 val initialTimeMs =
                     if (msg.has("initialTimeMs")) msg.optLong("initialTimeMs") else null
 
+                val deadline =
+                    if (msg.has("turnDeadlineEpochMs")) msg.optLong("turnDeadlineEpochMs") else null
+
                 onEvent?.invoke(
                     RelayEvent.StateSyncReceived(
                         fen = msg.optString("fen"),
                         sideToMove = msg.optString("sideToMove"),
                         moveHistory = historyList,
-                        initialTimeMs = initialTimeMs
+                        initialTimeMs = initialTimeMs,
+                        turnDeadlineEpochMs = deadline
                     )
                 )
             }
