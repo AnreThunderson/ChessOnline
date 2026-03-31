@@ -325,7 +325,10 @@ private fun OnlineChessBoard(
                 for (file in files) {
                     val sq = Square(file, rank)
                     val piece = state.board.pieceAt(sq)
-                    val isLight = (file + rank) % 2 == 0
+
+                    // FIX: a1 must be dark, so light squares are (file+rank) odd (same as local board)
+                    val isLight = (file + rank) % 2 == 1
+
                     val isSelected = state.selected == sq
                     val isTarget = state.legalTargets.contains(sq)
 
