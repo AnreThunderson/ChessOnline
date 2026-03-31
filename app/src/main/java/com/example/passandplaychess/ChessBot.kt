@@ -8,13 +8,12 @@ data class BotConfig(
     val botSide: Side,
     /** Search depth in plies (half-moves). 1–6 supported; 2–4 recommended for phones. */
     val depth: Int,
-    /** Soft time limit per move (ms). Keeps higher depths responsive. */
-    val timeLimitMs: Long = 350L
+    /** Soft time limit per move (ms). */
+    val timeLimitMs: Long = 450L
 )
 
 object ChessBot {
 
-    /** Returns a UCI move string (e.g. "e2e4") or null if no legal move exists. */
     fun chooseMoveUci(
         state: ChessGameState,
         config: BotConfig,
@@ -28,13 +27,11 @@ object ChessBot {
         if (rootMoves.isEmpty()) return null
 
         val deadlineNs = System.nanoTime() + config.timeLimitMs * 1_000_000L
-        val maxDepth = config.depth.coerceIn(1, 6)
+        val maxDepth = config.depth.coerceIn(1, 7)
 
-        // Always have a fallback move.
         var bestMoveSoFar: Move = rootMoves[rng.nextInt(rootMoves.size)]
         var bestScoreSoFar = Int.MIN_VALUE
 
-        // Iterative deepening: 1..maxDepth. If we time out mid-iteration, keep last completed depth's result.
         for (d in 1..maxDepth) {
             val rr = searchRoot(state, depth = d, deadlineNs = deadlineNs, rng = rng)
             if (!rr.completed) break
@@ -67,7 +64,6 @@ object ChessBot {
 
             val next = state.applyMoveForAnalysis(mv) ?: continue
 
-            // After we make a move, it becomes opponent-to-move, so negate.
             val score = -negamax(
                 state = next,
                 depth = depth - 1,
@@ -89,8 +85,8 @@ object ChessBot {
     }
 
     /**
-     * Negamax with alpha-beta pruning.
-     * IMPORTANT: evaluateSideToMove() must be from side-to-move's perspective.
+     * Negamax with alpha-beta. Evaluation must be from side-to-move perspective.
+     * Uses quiescence search at leaf nodes to avoid capture-horizon blunders.
      */
     private fun negamax(
         state: ChessGameState,
@@ -101,8 +97,10 @@ object ChessBot {
     ): Int {
         if (System.nanoTime() >= deadlineNs) return evaluateSideToMove(state)
 
-        if (depth <= 0 || state.result != GameResult.Ongoing) {
-            return evaluateSideToMove(state)
+        if (state.result != GameResult.Ongoing) return evaluateSideToMove(state)
+
+        if (depth <= 0) {
+            return quiescence(state, alpha, beta, deadlineNs)
         }
 
         val moves = state.allLegalMoves()
@@ -134,6 +132,55 @@ object ChessBot {
     }
 
     /**
+     * Quiescence search: extend only capture sequences (and promotions).
+     * This prevents "win a pawn, lose a piece" blunders at the horizon.
+     */
+    private fun quiescence(
+        state: ChessGameState,
+        alpha: Int,
+        beta: Int,
+        deadlineNs: Long
+    ): Int {
+        if (System.nanoTime() >= deadlineNs) return evaluateSideToMove(state)
+        if (state.result != GameResult.Ongoing) return evaluateSideToMove(state)
+
+        var a = alpha
+
+        val standPat = evaluateSideToMove(state)
+        if (standPat >= beta) return standPat
+        if (standPat > a) a = standPat
+
+        // Generate only tactical moves: captures, en-passant, promotions.
+        val tactical = state.allLegalMoves().filter { mv ->
+            when (mv) {
+                is Move.EnPassant -> true
+                is Move.Castle -> false
+                is Move.Normal -> {
+                    val isCapture = state.board.pieceAt(mv.to) != null
+                    val isPromo = mv.promotion != null
+                    isCapture || isPromo
+                }
+            }
+        }
+
+        if (tactical.isEmpty()) return standPat
+
+        val ordered = orderMoves(state, tactical)
+
+        for (mv in ordered) {
+            if (System.nanoTime() >= deadlineNs) break
+            val next = state.applyMoveForAnalysis(mv) ?: continue
+
+            val score = -quiescence(next, -beta, -a, deadlineNs)
+
+            if (score >= beta) return score
+            if (score > a) a = score
+        }
+
+        return a
+    }
+
+    /**
      * Move ordering:
      * - captures first (by captured piece value)
      * - promotions next
@@ -152,7 +199,6 @@ object ChessBot {
                 else -> 0
             }
 
-            // Optional: tiny check bonus. If you want max speed, remove this block.
             val checkBonus = runCatching {
                 val next = state.applyMoveForAnalysis(mv)
                 if (next != null && next.isInCheck(next.sideToMove)) 25 else 0
@@ -165,14 +211,8 @@ object ChessBot {
     }
 
     /**
-     * Static eval from the CURRENT side-to-move perspective.
-     * Positive => good for sideToMove, negative => good for the other side.
-     *
-     * This includes:
-     * - Material (dominant)
-     * - Piece-square tables (PST) for basic development/center play
-     * - King safety / castling incentive (discourage early king walks with queens on board)
-     * - Check bonus/penalty
+     * Static eval from side-to-move perspective.
+     * Includes: material + PST + simple king safety.
      */
     private fun evaluateSideToMove(state: ChessGameState): Int {
         when (val r = state.result) {
@@ -183,7 +223,6 @@ object ChessBot {
             else -> return 0
         }
 
-        // Material + PST from White’s perspective
         var scoreWhite = 0
 
         var whiteKingSq: Square? = null
@@ -194,9 +233,7 @@ object ChessBot {
         for ((sq, p) in state.board.allPieces()) {
             val v = pieceValue(p.type)
             val pst = pstBonus(p, sq)
-
-            val signed = if (p.side == Side.WHITE) (v + pst) else -(v + pst)
-            scoreWhite += signed
+            scoreWhite += if (p.side == Side.WHITE) (v + pst) else -(v + pst)
 
             if (p.type == PieceType.KING) {
                 if (p.side == Side.WHITE) whiteKingSq = sq else blackKingSq = sq
@@ -206,45 +243,35 @@ object ChessBot {
             }
         }
 
-        // King safety / opening sanity:
         fun kingSafetyPenalty(side: Side, kingSq: Square?, enemyQueenExists: Boolean): Int {
             if (kingSq == null) return 0
             if (!enemyQueenExists) return 0
 
-            // Center is dangerous when queens exist.
             val centerPenalty =
                 if (kingSq.file in 2..5 && kingSq.rank in 2..5) 60 else 0
 
             val homeRank = if (side == Side.WHITE) 0 else 7
-            val castledSq1 = Square(6, homeRank) // g1/g8
-            val castledSq2 = Square(2, homeRank) // c1/c8
+            val castledSq1 = Square(6, homeRank)
+            val castledSq2 = Square(2, homeRank)
 
             val notCastledPenalty =
                 if (kingSq != castledSq1 && kingSq != castledSq2) 20 else 0
 
-            // Penalize leaving the home rank early.
             val leftHomeRankPenalty =
                 if (kingSq.rank != homeRank) 35 else 0
 
             return centerPenalty + notCastledPenalty + leftHomeRankPenalty
         }
 
-        // Penalties apply to that side (so subtract for white, add for black because scoreWhite is white-perspective)
         scoreWhite -= kingSafetyPenalty(Side.WHITE, whiteKingSq, enemyQueenExists = blackQueenOnBoard)
         scoreWhite += kingSafetyPenalty(Side.BLACK, blackKingSq, enemyQueenExists = whiteQueenOnBoard)
 
-        // Check heuristic (white-perspective)
         if (state.isInCheck(Side.WHITE)) scoreWhite -= 25
         if (state.isInCheck(Side.BLACK)) scoreWhite += 25
 
-        // Convert to side-to-move perspective for negamax
         return if (state.sideToMove == Side.WHITE) scoreWhite else -scoreWhite
     }
 
-    /**
-     * Very small piece-square tables (PST).
-     * Values are from White’s perspective; Black is mirrored.
-     */
     private fun pstBonus(piece: Piece, sq: Square): Int {
         val r = if (piece.side == Side.WHITE) sq.rank else (7 - sq.rank)
         val f = sq.file
@@ -273,8 +300,7 @@ object ChessBot {
         if (isEmpty()) null else this[rng.nextInt(size)]
 }
 
-// ── Piece-square tables (PST) ────────────────────────────────────────────────
-// These are simple/cheap and mainly prevent nonsense openings (king walks, random pawns).
+// ── PST tables ───────────────────────────────────────────────────────────────
 
 private val PST_PAWN = intArrayOf(
      0,  0,  0,  0,  0,  0,  0,  0,
