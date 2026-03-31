@@ -1,5 +1,6 @@
 package com.example.passandplaychess
 
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -17,16 +18,21 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.passandplaychess.R as AppR
 import com.example.passandplaychess.multiplayer.MultiplayerScreen
 import com.example.passandplaychess.ui.theme.PassAndPlayChessTheme
 
-// ── Screen navigation ─────────────────────────────────────────────────────────
+private const val PREFS_NAME = "chessonline_prefs"
+private const val KEY_LOCAL_GAME = "local_game_state_v1"
 
 private sealed class AppScreen {
     data object Menu : AppScreen()
@@ -104,9 +110,55 @@ private fun MenuScreen(
     }
 }
 
+private fun loadLocalGame(context: Context): ChessGameState? {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val raw = prefs.getString(KEY_LOCAL_GAME, null) ?: return null
+    return ChessGameState.fromPersistedString(raw)
+}
+
+private fun saveLocalGame(context: Context, state: ChessGameState) {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    prefs.edit().putString(KEY_LOCAL_GAME, state.toPersistedString()).apply()
+}
+
+private fun clearLocalGame(context: Context) {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    prefs.edit().remove(KEY_LOCAL_GAME).apply()
+}
+
 @Composable
 private fun ChessScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
     var state by remember { mutableStateOf(ChessGameState.initial()) }
+    var loadedOnce by remember { mutableStateOf(false) }
+
+    // Load saved game once when entering screen.
+    LaunchedEffect(Unit) {
+        if (!loadedOnce) {
+            state = loadLocalGame(context) ?: ChessGameState.initial()
+            loadedOnce = true
+        }
+    }
+
+    // Save on every change after initial load.
+    LaunchedEffect(loadedOnce, state) {
+        if (loadedOnce) saveLocalGame(context, state)
+    }
+
+    // Also save when app goes background.
+    DisposableEffect(lifecycleOwner, loadedOnce) {
+        if (!loadedOnce) return@DisposableEffect onDispose { }
+
+        val obs = object : DefaultLifecycleObserver {
+            override fun onStop(owner: LifecycleOwner) {
+                saveLocalGame(context, state)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
 
     Column(
         modifier = Modifier
@@ -116,9 +168,15 @@ private fun ChessScreen(onBack: () -> Unit) {
     ) {
         Header(
             state = state,
-            onNewGame = { state = ChessGameState.initial() },
+            onNewGame = {
+                state = ChessGameState.initial()
+                saveLocalGame(context, state)
+            },
             onClearSelection = { state = state.copy(selected = null, legalTargets = emptySet(), lastMessage = "") },
-            onBack = onBack
+            onBack = {
+                saveLocalGame(context, state)
+                onBack()
+            }
         )
 
         ChessBoard(
@@ -130,6 +188,17 @@ private fun ChessScreen(onBack: () -> Unit) {
         )
 
         Footer(state = state)
+
+        // Optional: allow user to wipe autosave slot.
+        OutlinedButton(
+            onClick = {
+                clearLocalGame(context)
+                state = ChessGameState.initial()
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Reset saved local game")
+        }
     }
 }
 
