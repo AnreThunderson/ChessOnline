@@ -1,5 +1,6 @@
 package com.example.passandplaychess.multiplayer
 
+import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.passandplaychess.BuildConfig
@@ -16,24 +17,19 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.math.max
 
-// ── UI state ──────────────────���───────────────────────────────────────────────
-
 sealed class MultiplayerUiState {
     data object Idle : MultiplayerUiState()
     data object Connecting : MultiplayerUiState()
-    /** Waiting for the second player to join. */
     data class WaitingForPeer(val roomCode: String, val role: String) : MultiplayerUiState()
-    /** Both players are connected and the game is in progress. */
     data class InGame(
         val roomCode: String,
         val role: String,
         val myTurn: Boolean
     ) : MultiplayerUiState()
+
     data class PeerDisconnected(val message: String) : MultiplayerUiState()
     data class Failure(val message: String) : MultiplayerUiState()
 }
-
-// ── ViewModel ─────────────────────────────────────────────────────────────────
 
 class MultiplayerViewModel : ViewModel() {
 
@@ -45,10 +41,9 @@ class MultiplayerViewModel : ViewModel() {
     private val _gameState = MutableStateFlow(ChessGameState.initial())
     val gameState: StateFlow<ChessGameState> = _gameState
 
-    // ── Clock state ───────────────────────────────────────────────────────────
+    // ── Time control / clocks ──────────────────────────────────────────────
 
-    // Chosen before connecting (host chooses; guest just uses whatever host sends)
-    private val _selectedMinutes = MutableStateFlow(5) // default 5 min
+    private val _selectedMinutes = MutableStateFlow(5) // host chooses before creating room
     val selectedMinutes: StateFlow<Int> = _selectedMinutes
 
     private val _initialTimeMs = MutableStateFlow(minutesToMs(_selectedMinutes.value))
@@ -61,7 +56,7 @@ class MultiplayerViewModel : ViewModel() {
     val timeBlackMs: StateFlow<Long> = _timeBlackMs
 
     private var clockJob: Job? = null
-    private var lastTickElapsedRealtime: Long? = null
+    private var lastTick: Long? = null
 
     /** Running sequence number for outbound moves. */
     private var outSeq = 0
@@ -70,13 +65,10 @@ class MultiplayerViewModel : ViewModel() {
     private var myRole: String = "host"
 
     init {
-        // Observe connection-level events
         viewModelScope.launch {
             relay.connectionState.collect { state ->
                 when (state) {
-                    is ConnectionState.Connecting -> {
-                        _uiState.value = MultiplayerUiState.Connecting
-                    }
+                    is ConnectionState.Connecting -> _uiState.value = MultiplayerUiState.Connecting
                     is ConnectionState.Connected -> {
                         myRole = state.role
                         _uiState.value = MultiplayerUiState.WaitingForPeer(
@@ -86,6 +78,7 @@ class MultiplayerViewModel : ViewModel() {
                     }
                     is ConnectionState.Error -> {
                         _uiState.value = MultiplayerUiState.Failure(state.message)
+                        stopClock()
                     }
                     is ConnectionState.Disconnected -> {
                         val current = _uiState.value
@@ -100,44 +93,40 @@ class MultiplayerViewModel : ViewModel() {
             }
         }
 
-        // Observe relay events (moves, peer lifecycle)
         relay.onEvent = { event ->
-            viewModelScope.launch {
-                handleRelayEvent(event)
-            }
+            viewModelScope.launch { handleRelayEvent(event) }
         }
     }
 
-    // ── Public API ─────────────────────────────────────────────────────────
-
+    // Host-only (UI calls this before hostGame)
     fun setTimeControlMinutes(minutes: Int) {
         val m = minutes.coerceIn(1, 60)
         _selectedMinutes.value = m
         val ms = minutesToMs(m)
         _initialTimeMs.value = ms
-        // If not in a running game, also reset displayed times
-        if (_uiState.value !is MultiplayerUiState.InGame && _uiState.value !is MultiplayerUiState.WaitingForPeer) {
+
+        // If we're not already in a match, reflect choice in the displayed clocks
+        if (_uiState.value !is MultiplayerUiState.InGame &&
+            _uiState.value !is MultiplayerUiState.WaitingForPeer
+        ) {
             _timeWhiteMs.value = ms
             _timeBlackMs.value = ms
         }
     }
 
     fun hostGame(roomCode: String) {
-        resetGameAndClocksForNewMatch()
+        resetGameAndClocks()
         outSeq = 0
         relay.connect(roomCode, "host")
     }
 
     fun joinGame(roomCode: String) {
-        resetGameAndClocksForNewMatch()
+        // guest doesn't pick the clock; it will be synced by host via state_sync
+        resetGameAndClocks()
         outSeq = 0
         relay.connect(roomCode, "guest")
     }
 
-    /**
-     * Called by the UI when the local player taps a square.
-     * Only processes the tap if it is this player's turn.
-     */
     fun onTap(sq: Square) {
         val state = _gameState.value
         if (state.result != GameResult.Ongoing) return
@@ -152,7 +141,6 @@ class MultiplayerViewModel : ViewModel() {
 
         _gameState.value = newState
         updateInGameTurn(newState)
-        // turn switches => next tick will subtract from the other side automatically
     }
 
     fun leaveGame() {
@@ -160,21 +148,11 @@ class MultiplayerViewModel : ViewModel() {
         stopClock()
         _gameState.value = ChessGameState.initial()
         _uiState.value = MultiplayerUiState.Idle
-        // keep selected minutes, but reset times to initial for convenience
-        _timeWhiteMs.value = _initialTimeMs.value
-        _timeBlackMs.value = _initialTimeMs.value
-    }
 
-    // ── Private helpers ────────────────────────────────────────────────────
-
-    private fun resetGameAndClocksForNewMatch() {
-        stopClock()
-        _gameState.value = ChessGameState.initial()
-
+        // reset clocks to selected time for convenience
         val ms = _initialTimeMs.value
         _timeWhiteMs.value = ms
         _timeBlackMs.value = ms
-        lastTickElapsedRealtime = null
     }
 
     private fun isMyTurn(state: ChessGameState): Boolean {
@@ -195,7 +173,7 @@ class MultiplayerViewModel : ViewModel() {
                     myTurn = isMyTurn(gs)
                 )
 
-                // Host sends initial state sync so the guest sees the same board + time control
+                // Host sends initial state + time control
                 if (myRole == "host") {
                     relay.sendStateSync(
                         fen = gs.toFen(),
@@ -208,9 +186,7 @@ class MultiplayerViewModel : ViewModel() {
             }
 
             is RelayEvent.PeerLeft -> {
-                _uiState.value = MultiplayerUiState.PeerDisconnected(
-                    "Your opponent disconnected."
-                )
+                _uiState.value = MultiplayerUiState.PeerDisconnected("Your opponent disconnected.")
                 stopClock()
             }
 
@@ -220,16 +196,14 @@ class MultiplayerViewModel : ViewModel() {
                 if (next != null) {
                     _gameState.value = next
                     updateInGameTurn(next)
-                    // turn switches => next tick subtracts from correct side
                 }
             }
 
             is RelayEvent.StateSyncReceived -> {
-                // If host included a time control, adopt it (guest side)
+                // Guest learns the time control here
                 val t = event.initialTimeMs
                 if (t != null && t > 0) {
                     _initialTimeMs.value = t
-                    // Reset both clocks on first sync only (i.e., when still at initial values)
                     _timeWhiteMs.value = t
                     _timeBlackMs.value = t
                 }
@@ -262,10 +236,16 @@ class MultiplayerViewModel : ViewModel() {
                 prev.copy(myTurn = isMyTurn(state) && state.result == GameResult.Ongoing)
             } else prev
         }
+        if (state.result != GameResult.Ongoing) stopClock()
+    }
 
-        if (state.result != GameResult.Ongoing) {
-            stopClock()
-        }
+    private fun resetGameAndClocks() {
+        stopClock()
+        _gameState.value = ChessGameState.initial()
+        val ms = _initialTimeMs.value
+        _timeWhiteMs.value = ms
+        _timeBlackMs.value = ms
+        lastTick = null
     }
 
     private fun startClockIfNeeded() {
@@ -274,7 +254,6 @@ class MultiplayerViewModel : ViewModel() {
         if (_gameState.value.result != GameResult.Ongoing) return
 
         clockJob = viewModelScope.launch {
-            // tick ~10 times/sec (smooth enough; cheap)
             while (true) {
                 delay(100)
                 tickClock()
@@ -285,7 +264,7 @@ class MultiplayerViewModel : ViewModel() {
     private fun stopClock() {
         clockJob?.cancel()
         clockJob = null
-        lastTickElapsedRealtime = null
+        lastTick = null
     }
 
     private fun tickClock() {
@@ -294,9 +273,9 @@ class MultiplayerViewModel : ViewModel() {
         if (ui !is MultiplayerUiState.InGame) return
         if (gs.result != GameResult.Ongoing) return
 
-        val now = android.os.SystemClock.elapsedRealtime()
-        val prev = lastTickElapsedRealtime
-        lastTickElapsedRealtime = now
+        val now = SystemClock.elapsedRealtime()
+        val prev = lastTick
+        lastTick = now
         if (prev == null) return
 
         val delta = max(0L, now - prev)
@@ -317,12 +296,8 @@ class MultiplayerViewModel : ViewModel() {
 
     private fun onFlagFell(winner: Side) {
         stopClock()
-        // Treat as checkmate-style terminal result for UI purposes.
-        // (If you want a dedicated "timeout" result type later, we can add it.)
         _gameState.update { it.copy(result = GameResult.Checkmate(winner = winner)) }
         updateInGameTurn(_gameState.value)
-        // Optional: you could also tell peer via a new relay message type, but both sides will
-        // reach timeout independently (clocks are kept in sync by turn + time control).
     }
 
     override fun onCleared() {
