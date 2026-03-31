@@ -244,6 +244,68 @@ data class ChessGameState(
                 null
             }
         }
+
+        // ── Persistence helpers (autosave) ─────────────────────────────────────
+
+        /**
+         * Load from a persisted string produced by [ChessGameState.toPersistedString].
+         */
+        fun fromPersistedString(raw: String): ChessGameState? {
+            return try {
+                val lines = raw.split('\n')
+                val fenLine = lines.firstOrNull { it.startsWith("fen=") } ?: return null
+                val repLine = lines.firstOrNull { it.startsWith("rep=") } ?: "rep="
+
+                val fen = fenLine.removePrefix("fen=")
+                    .replace("\\n", "\n")
+                    .replace("\\\\", "\\")
+
+                val base = fromFen(fen) ?: return null
+
+                val repRaw = repLine.removePrefix("rep=")
+                val rep = if (repRaw.isBlank()) {
+                    emptyMap()
+                } else {
+                    repRaw.split(";")
+                        .filter { it.isNotBlank() }
+                        .associate { entry ->
+                            val idx = entry.lastIndexOf('=')
+                            if (idx <= 0) return@associate "" to 0
+                            val kEsc = entry.substring(0, idx)
+                            val vStr = entry.substring(idx + 1)
+
+                            val k = kEsc
+                                .replace("\\=", "=")
+                                .replace("\\;", ";")
+                                .replace("\\\\", "\\")
+
+                            val v = vStr.toIntOrNull() ?: 0
+                            k to v
+                        }
+                        .filterKeys { it.isNotBlank() }
+                }
+
+                // Restore repetition counts and recompute the game result based on that.
+                base.copy(positionCounts = rep).withResultRecomputed()
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
+    /**
+     * Convert this game state into a persisted string.
+     * We store:
+     * - fen (already contains halfmoveClock/fullmoveNumber)
+     * - repetition map (positionCounts) for threefold detection continuity
+     */
+    fun toPersistedString(): String {
+        val rep = positionCounts.entries.joinToString(";") { (k, v) ->
+            val ek = k.replace("\\", "\\\\").replace(";", "\\;").replace("=", "\\=")
+            "$ek=$v"
+        }
+        val fenEscaped = toFen().replace("\\", "\\\\").replace("\n", "\\n")
+        return "fen=$fenEscaped\nrep=$rep"
     }
 
     fun handleTap(sq: Square): TapResult {
@@ -291,6 +353,7 @@ data class ChessGameState(
     }
 
     // ── BOT SUPPORT (public) ────────────────────────────────────────────────
+    // (You said you'll delete ChessBot.kt yourself; these public helpers are fine to keep.)
 
     /** Public: all legal moves for the current side to move (used by offline bot). */
     fun allLegalMoves(): List<Move> = generateAllLegalMoves(sideToMove)
