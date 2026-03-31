@@ -101,10 +101,12 @@ wss.on("connection", (rawWs: ExtWs) => {
         break;
 
       case "move":
+        // Best-effort relay. In daily mode opponent can be offline.
         handleRelay(rawWs, msg);
         break;
 
       case "state_sync":
+        // Canonical game state commit (persist to DB). Works even if peer offline.
         void handleStateSync(rawWs, msg);
         break;
 
@@ -144,11 +146,7 @@ async function handleHello(ws: ExtWs, msg: Record<string, unknown>): Promise<voi
     return;
   }
 
-  // For daily games we want reconnects to work. So:
-  // - host: if room doesn’t exist in memory, (re)create it (don’t error)
-  // - guest: allow joining if room exists OR is present in DB; we’ll create room in memory when they join.
   let room = rooms.get(room_code);
-
   if (!room) {
     room = { code: room_code, clients: [] };
     rooms.set(room_code, room);
@@ -186,10 +184,26 @@ async function handleHello(ws: ExtWs, msg: Record<string, unknown>): Promise<voi
     occupants: room.clients.length,
   });
 
-  // Load saved state (if any) and send to the connecting client
+  // Load saved state (if any) and send to connecting client
   try {
     const saved = await loadGame(room_code);
     if (saved) {
+      const isDaily = saved.initial_time_ms === ONE_DAY_MS;
+      const deadline = saved.turn_deadline_epoch_ms ?? null;
+
+      // If the deadline passed while everyone was offline, time still expires.
+      if (isDaily && deadline != null && nowMs() > deadline) {
+        const loser = saved.side_to_move; // side who failed to move
+        const winner = loser === "w" ? "b" : "w";
+        send(ws, {
+          type: "time_forfeit",
+          room: room_code,
+          winner,
+          loser,
+          deadlineEpochMs: deadline,
+        });
+      }
+
       send(ws, {
         type: "state_sync",
         fen: saved.fen,
@@ -226,7 +240,8 @@ function handleRelay(ws: ExtWs, msg: Record<string, unknown>): void {
 
   const p = peer(room, client);
   if (!p) {
-    sendError(ws, "No peer connected yet");
+    // DAILY REQUIREMENT:
+    // Opponent may be offline. Do not error; just accept and return.
     return;
   }
 
@@ -260,13 +275,10 @@ async function handleStateSync(ws: ExtWs, msg: Record<string, unknown>): Promise
       ? Math.max(0, Math.floor(initialTimeMsRaw))
       : null;
 
-  // If this is a 1-day-per-move game, reset the deadline whenever a new synced state arrives.
-  // (Meaning: after each move, next player has 24h.)
   const isDaily = initialTimeMs === ONE_DAY_MS;
-
   const turnDeadlineEpochMs = isDaily ? nowMs() + ONE_DAY_MS : null;
 
-  // Persist
+  // Persist (canonical)
   try {
     await upsertGame({
       room_code: room.code,
@@ -277,16 +289,12 @@ async function handleStateSync(ws: ExtWs, msg: Record<string, unknown>): Promise
     });
   } catch (e) {
     console.error("DB upsertGame failed:", e);
-    // Non-fatal: still relay.
+    // Non-fatal: still relay if possible.
   }
 
-  // Relay to peer (and include computed deadline so clients can display it)
+  // Relay to peer if connected (best-effort)
   const p = peer(room, client);
-  if (!p) {
-    // In daily mode, it's OK if peer isn't connected right now.
-    // Don't treat it as an error.
-    return;
-  }
+  if (!p) return;
 
   send(p.ws, {
     ...msg,
@@ -300,10 +308,8 @@ function handleClose(ws: ExtWs): void {
 
   if (!client || !room) return;
 
-  // Remove from room
   room.clients = room.clients.filter((c) => c.id !== client.id);
 
-  // Notify remaining peer
   const p = room.clients[0];
   if (p) {
     send(p.ws, {
@@ -313,10 +319,7 @@ function handleClose(ws: ExtWs): void {
     });
   }
 
-  // IMPORTANT for daily games:
-  // Do NOT delete the room just because host disconnected.
-  // Rooms are ephemeral in memory anyway; canonical state is in Postgres.
-  // We can clean up empty room entries to avoid leaking memory:
+  // Keep DB state; just cleanup empty in-memory rooms.
   if (room.clients.length === 0) {
     rooms.delete(room.code);
   }
