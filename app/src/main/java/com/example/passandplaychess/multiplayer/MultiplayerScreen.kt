@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.passandplaychess.*
+import com.example.passandplaychess.R as AppR
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -199,7 +200,7 @@ private fun WaitingScreen(roomCode: String, role: String, onCancel: () -> Unit) 
         Spacer(Modifier.height(8.dp))
         Text(
             text = if (role == "host") "Waiting for opponent to join…"
-                   else "Joining room, please wait…",
+            else "Joining room, please wait…",
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(32.dp))
@@ -273,28 +274,31 @@ private fun OnlineStatusBar(
     val turnLabel = if (gameState.sideToMove == Side.WHITE) "White" else "Black"
     val colorLabel = if (role == "host") "White" else "Black"
 
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
-            text = "Room: $roomCode  |  You: $colorLabel",
-            fontSize = 13.sp,
+            text = "Room: $roomCode",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = "You: $colorLabel",
+            fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Text(
             text = "Turn: $turnLabel$checkStatus",
             fontSize = 16.sp,
-            fontWeight = if (myTurn) FontWeight.Bold else FontWeight.Normal,
-            color = if (myTurn) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurface
+            fontWeight = FontWeight.SemiBold
         )
-        if (gameState.lastMessage.isNotBlank()) {
-            Text(
-                text = gameState.lastMessage,
-                fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.error
-            )
-        }
+        Text(
+            text = if (myTurn) "Your move" else "Waiting…",
+            fontSize = 12.sp,
+            color = if (myTurn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
+
+// ── Board UI (online) ─────────────────────────────────────────────────────────
 
 @Composable
 private fun OnlineChessBoard(
@@ -307,15 +311,15 @@ private fun OnlineChessBoard(
     val selectedColor = Color(0xFFBACA44)
     val targetColor = Color(0xFFDAC36A)
 
-    val ranks = if (flipped) 0..7 else 7 downTo 0
-    val files = if (flipped) 7 downTo 0 else 0..7
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(1f)
             .border(2.dp, Color.Black)
     ) {
+        val ranks = if (!flipped) (7 downTo 0) else (0..7)
+        val files = if (!flipped) (0..7) else (7 downTo 0)
+
         for (rank in ranks) {
             Row(modifier = Modifier.weight(1f)) {
                 for (file in files) {
@@ -339,7 +343,7 @@ private fun OnlineChessBoard(
                             .clickable(enabled = state.result == GameResult.Ongoing) { onTap(sq) },
                         contentAlignment = Alignment.Center
                     ) {
-                        val resId = piece?.drawableResIdOrNull()
+                        val resId = piece?.drawableResIdOrNullOnline()
                         if (resId != null) {
                             Image(
                                 painter = painterResource(id = resId),
@@ -360,7 +364,36 @@ private fun OnlineChessBoard(
     }
 }
 
-// ── Disconnected / error screens ──────────────────────────────────────────────
+private fun Piece.drawableResIdOrNullOnline(): Int? {
+    return when (this.toUnicode()) {
+        // White
+        "♔" -> AppR.drawable.chess_klt45
+        "♕" -> AppR.drawable.chess_qlt45
+        "♖" -> AppR.drawable.chess_rlt45
+        "♗" -> AppR.drawable.chess_blt45
+        "♘" -> AppR.drawable.chess_nlt45
+        "♙" -> AppR.drawable.chess_plt45
+
+        // Black
+        "♚" -> AppR.drawable.chess_kdt45
+        "♛" -> AppR.drawable.chess_qdt45
+        "♜" -> AppR.drawable.chess_rdt45
+        "♝" -> AppR.drawable.chess_bdt45
+        "♞" -> AppR.drawable.chess_ndt45
+        "♟" -> AppR.drawable.chess_pdt45
+
+        else -> null
+    }
+}
+
+// ── Simple status / error screens ─────────────────────────────────────────────
+
+@Composable
+private fun CenteredStatus(text: String) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text(text, fontSize = 18.sp)
+    }
+}
 
 @Composable
 private fun DisconnectedScreen(message: String, onBack: () -> Unit) {
@@ -371,11 +404,11 @@ private fun DisconnectedScreen(message: String, onBack: () -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("Disconnected", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text("Disconnected", fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(12.dp))
         Text(message, textAlign = TextAlign.Center)
         Spacer(Modifier.height(24.dp))
-        Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Back to Menu") }
+        Button(onClick = onBack) { Text("Back") }
     }
 }
 
@@ -388,45 +421,15 @@ private fun ErrorScreen(message: String, onBack: () -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("Error", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+        Text("Error", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
         Spacer(Modifier.height(12.dp))
         Text(message, textAlign = TextAlign.Center)
         Spacer(Modifier.height(24.dp))
-        Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Back to Menu") }
+        Button(onClick = onBack) { Text("Back") }
     }
 }
-
-@Composable
-private fun CenteredStatus(text: String) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            CircularProgressIndicator()
-            Spacer(Modifier.height(16.dp))
-            Text(text)
-        }
-    }
-}
-
-// ── Utilities ─────────────────────────────────────────────────────────────────
 
 private fun generateRoomCode(): String {
     val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return (1..5).map { chars.random() }.joinToString("")
-}
-
-/** Reuse the same mapping as MainActivity without duplicating drawables. */
-private fun Piece.drawableResIdOrNull(): Int? = when (this.toUnicode()) {
-    "♔" -> R.drawable.chess_klt45
-    "♕" -> R.drawable.chess_qlt45
-    "♖" -> R.drawable.chess_rlt45
-    "♗" -> R.drawable.chess_blt45
-    "♘" -> R.drawable.chess_nlt45
-    "♙" -> R.drawable.chess_plt45
-    "♚" -> R.drawable.chess_kdt45
-    "♛" -> R.drawable.chess_qdt45
-    "♜" -> R.drawable.chess_rdt45
-    "♝" -> R.drawable.chess_bdt45
-    "♞" -> R.drawable.chess_ndt45
-    "♟" -> R.drawable.chess_pdt45
-    else -> null
 }
