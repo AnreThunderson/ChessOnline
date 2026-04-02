@@ -49,6 +49,7 @@ private sealed class AppScreen {
     data object Menu : AppScreen()
     data object LocalGame : AppScreen()
     data class Multiplayer(val resume: DailyResumeParams? = null) : AppScreen()
+    data object Credits : AppScreen()
 }
 
 data class DailyResumeParams(
@@ -87,7 +88,8 @@ private fun AppNavigation() {
         AppScreen.Menu -> MenuScreen(
             onLocalPlay = { screen = AppScreen.LocalGame },
             onMultiplayer = { screen = AppScreen.Multiplayer(null) },
-            onOpenDaily = { params -> screen = AppScreen.Multiplayer(params) }
+            onOpenDaily = { params -> screen = AppScreen.Multiplayer(params) },
+            onCredits = { screen = AppScreen.Credits }
         )
 
         AppScreen.LocalGame -> ChessScreen(
@@ -99,26 +101,22 @@ private fun AppNavigation() {
             resumeRoomCode = s.resume?.roomCode,
             resumeRole = s.resume?.role
         )
+
+        AppScreen.Credits -> CreditsScreen(
+            onBack = { screen = AppScreen.Menu }
+        )
     }
 }
 
-// ── Donation helper ─────────────────────────────────────���────────────────────
-//
-// Uses try/catch instead of resolveActivity().
-// Also strips surrounding quotes in case a buildConfigField is defined as "\"https://...\"".
+// ── Helpers ────────────────────────────────────────────────────────────────
 
-private fun openDonationLink(context: Context) {
-    val raw = (BuildConfig.DONATION_URL ?: "").trim()
-    val url = raw.removeSurrounding("\"")
+private fun openUrl(context: Context, url: String) {
+    val clean = url.trim().removeSurrounding("\"")
+    if (clean.isBlank()) return
 
-    if (url.isBlank() || url == "REPLACE_ME") {
-        Toast.makeText(context, "Donation link is not configured.", Toast.LENGTH_LONG).show()
-        return
-    }
-
-    val uri = runCatching { Uri.parse(url) }.getOrNull()
+    val uri = runCatching { Uri.parse(clean) }.getOrNull()
     if (uri == null || uri.scheme.isNullOrBlank()) {
-        Toast.makeText(context, "Donation link is invalid: $url", Toast.LENGTH_LONG).show()
+        Toast.makeText(context, "Invalid link: $clean", Toast.LENGTH_LONG).show()
         return
     }
 
@@ -132,10 +130,27 @@ private fun openDonationLink(context: Context) {
     } catch (e: Exception) {
         Toast.makeText(
             context,
-            "Could not open donation link: ${e.message ?: "unknown error"}",
+            "Could not open link: ${e.message ?: "unknown error"}",
             Toast.LENGTH_LONG
         ).show()
     }
+}
+
+// ── Donation helper ──────────────────────────────────────────────────────────
+//
+// Uses try/catch instead of resolveActivity().
+// Also strips surrounding quotes in case a buildConfigField is defined as "\"https://...\"".
+
+private fun openDonationLink(context: Context) {
+    val raw = (BuildConfig.DONATION_URL ?: "").trim()
+    val url = raw.removeSurrounding("\"")
+
+    if (url.isBlank() || url == "REPLACE_ME") {
+        Toast.makeText(context, "Donation link is not configured.", Toast.LENGTH_LONG).show()
+        return
+    }
+
+    openUrl(context, url)
 }
 
 // ── Daily persistence helpers ───────────────────────────────────────────────
@@ -194,7 +209,8 @@ private fun deleteDailyGame(context: Context, roomCode: String) {
 private fun MenuScreen(
     onLocalPlay: () -> Unit,
     onMultiplayer: () -> Unit,
-    onOpenDaily: (DailyResumeParams) -> Unit
+    onOpenDaily: (DailyResumeParams) -> Unit,
+    onCredits: () -> Unit
 ) {
     val context = LocalContext.current
     var dailyGames by remember { mutableStateOf(loadDailyGames(context)) }
@@ -259,6 +275,80 @@ private fun MenuScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("Donate")
+        }
+
+        OutlinedButton(
+            onClick = onCredits,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Credits / Licenses")
+        }
+    }
+}
+
+// ── Credits screen ──────────────────────────────────────────────────────────
+
+@Composable
+private fun CreditsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+
+    val sourceUrl = "https://commons.wikimedia.org/wiki/File:Chess_klt45.svg"
+    val licenseUrl = "https://creativecommons.org/licenses/by-sa/3.0/"
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Text(
+            text = "Credits / Licenses",
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            text = "Chess piece graphics:",
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+
+        Text(
+            text = "Based on the “Chess pieces” SVG set by Cburnett (Wikimedia Commons).",
+            fontSize = 14.sp
+        )
+
+        Text(
+            text = "License: CC BY-SA 3.0",
+            fontSize = 14.sp
+        )
+
+        Text(
+            text = "Changes: converted from SVG into Android VectorDrawable XML.",
+            fontSize = 14.sp
+        )
+
+        OutlinedButton(
+            onClick = { openUrl(context, sourceUrl) },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Open source page")
+        }
+
+        OutlinedButton(
+            onClick = { openUrl(context, licenseUrl) },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Open license")
+        }
+
+        Spacer(Modifier.weight(1f))
+
+        OutlinedButton(
+            onClick = onBack,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Back")
         }
     }
 }
