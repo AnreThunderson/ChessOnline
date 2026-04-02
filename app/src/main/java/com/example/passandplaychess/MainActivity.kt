@@ -102,16 +102,14 @@ private fun AppNavigation() {
     }
 }
 
-// ── Donation helper ──────────────────────────────────────────────────────────
+// ── Donation helper ─────────────────────────────────────���────────────────────
 //
-// Replaces the old version that used resolveActivity().
-// Some devices return null for resolveActivity() even though a browser exists.
-// We instead attempt startActivity() and catch failures. Also strips surrounding quotes
-// in case a buildConfigField is defined as "\"https://...\"".
+// Uses try/catch instead of resolveActivity().
+// Also strips surrounding quotes in case a buildConfigField is defined as "\"https://...\"".
 
 private fun openDonationLink(context: Context) {
     val raw = (BuildConfig.DONATION_URL ?: "").trim()
-    val url = raw.removeSurrounding("\"") // handles "\"https://...\"" safely
+    val url = raw.removeSurrounding("\"")
 
     if (url.isBlank() || url == "REPLACE_ME") {
         Toast.makeText(context, "Donation link is not configured.", Toast.LENGTH_LONG).show()
@@ -448,10 +446,12 @@ private fun ChessScreen(onBack: () -> Unit) {
                 state = ChessGameState.initial()
                 saveLocalGame(context, state)
             },
-            onClearSelection = { state = state.copy(selected = null, legalTargets = emptySet(), lastMessage = "") },
-            onBack = {
-                saveLocalGame(context, state)
-                onBack()
+            onClearSelection = {
+                state = state.copy(
+                    selected = null,
+                    legalTargets = emptySet(),
+                    lastMessage = ""
+                )
             }
         )
 
@@ -462,6 +462,17 @@ private fun ChessScreen(onBack: () -> Unit) {
                 state = res.newState
             }
         )
+
+        // Menu button moved to bottom of the board (below the board)
+        OutlinedButton(
+            onClick = {
+                saveLocalGame(context, state)
+                onBack()
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Menu")
+        }
 
         Footer(state = state)
 
@@ -481,8 +492,7 @@ private fun ChessScreen(onBack: () -> Unit) {
 private fun Header(
     state: ChessGameState,
     onNewGame: () -> Unit,
-    onClearSelection: () -> Unit,
-    onBack: () -> Unit
+    onClearSelection: () -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         val status = when (state.result) {
@@ -510,7 +520,6 @@ private fun Header(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onNewGame) { Text("New game") }
             Button(onClick = onClearSelection) { Text("Clear selection") }
-            OutlinedButton(onClick = onBack) { Text("Menu") }
         }
     }
 }
